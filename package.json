@@ -1,0 +1,94 @@
+{
+  "name": "sicua",
+  "version": "1.0.0",
+  "description": "A tool for analyzing project structure and dependencies",
+  "main": "dist/index.js",
+  "bin": {
+    "sicua": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "npm run clean && tsc && npm run copy-files",
+    "copy-files": "copyfiles -u 1 src/**/*.{json,txt} dist/",
+    "start": "node dist/cli.js",
+    "dev": "ts-node src/cli.ts",
+    "prepublishOnly": "npm run build",
+    "lint": "eslint . --ext .ts",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "analysis",
+    "project",
+    "react",
+    "typescript",
+    "dependencies",
+    "static-analysis",
+    "code-analysis",
+    "cli-tool",
+    "nextjs",
+    "circular-dependencies",
+    "zombie-code"
+  ],
+  "author": {
+    "name": "Vaggelis Kapetanakis",
+    "email": "your-email@example.com"
+  },
+  "license": "ISC",
+  "homepage": "https://github.com/yourusername/sicua#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/sicua.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/sicua/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  },
+  "preferGlobal": true,
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "dependencies": {
+    "@babel/parser": "^7.26.2",
+    "@babel/traverse": "^7.25.9",
+    "@storybook/csf-tools": "^8.4.2",
+    "commander": "^12.1.0",
+    "eslint-plugin-security": "^3.0.1",
+    "fast-glob": "^3.3.2",
+    "fast-levenshtein": "^3.0.0",
+    "figures": "^6.1.0",
+    "lodash": "^4.17.21",
+    "ora": "5.4.1",
+    "path-browserify": "^1.0.1",
+    "picocolors": "^1.1.1",
+    "rxjs": "^7.8.1",
+    "schema-dts": "^1.1.2",
+    "short-unique-id": "^5.2.0",
+    "typescript": "^5.6.3"
+  },
+  "devDependencies": {
+    "@babel/types": "^7.26.0",
+    "@storybook/types": "^8.4.2",
+    "@types/babel__traverse": "^7.20.6",
+    "@types/fast-levenshtein": "^0.0.4",
+    "@types/lodash": "^4.17.13",
+    "@types/node": "^22.7.6",
+    "@types/path-browserify": "^1.0.3",
+    "@types/react": "^18.3.12",
+    "@typescript-eslint/eslint-plugin": "^8.10.0",
+    "@typescript-eslint/parser": "^8.10.0",
+    "copyfiles": "^2.4.1",
+    "eslint": "^9.12.0",
+    "rimraf": "^6.0.1",
+    "ts-node": "^10.9.2"
+  }
+}
