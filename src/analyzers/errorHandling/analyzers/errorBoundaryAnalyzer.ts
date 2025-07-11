@@ -7,21 +7,26 @@ import { ASTUtils } from "../../../utils/ast/ASTUtils";
 import { ErrorPatternUtils } from "../../../utils/error_specific/errorPatternUtils";
 import { NodeTypeGuards } from "../../../utils/ast/nodeTypeGuards";
 import { traverseAST } from "../../../utils/ast/traversal";
+import { IConfigManager } from "../../../types";
+import * as path from "path";
+import { ConfigManager } from "../../../core/configManager";
 
 /**
- * Enhanced analyzer for error boundaries in React components
+ * Enhanced analyzer for error boundaries in React components with project structure awareness
  */
 export class ErrorBoundaryAnalyzer {
   private sourceFile: ts.SourceFile;
   private imports: Map<string, string> = new Map();
+  private config: IConfigManager;
 
-  constructor(sourceFile: ts.SourceFile, typeChecker: ts.TypeChecker) {
+  constructor(sourceFile: ts.SourceFile, config?: IConfigManager) {
     this.sourceFile = sourceFile;
+    this.config = config || new ConfigManager(process.cwd());
     this.analyzeImports();
   }
 
   /**
-   * Analyze import statements to understand available error boundary libraries
+   * Analyze import statements to understand available error boundary libraries with enhanced resolution
    */
   private analyzeImports(): void {
     traverseAST(this.sourceFile, (node) => {
@@ -30,25 +35,53 @@ export class ErrorBoundaryAnalyzer {
         ts.isStringLiteral(node.moduleSpecifier)
       ) {
         const moduleName = node.moduleSpecifier.text;
+        const resolvedModuleName = this.resolveImportPath(moduleName);
 
         if (
           node.importClause?.namedBindings &&
           ts.isNamedImports(node.importClause.namedBindings)
         ) {
           node.importClause.namedBindings.elements.forEach((element) => {
-            this.imports.set(element.name.text, moduleName);
+            this.imports.set(element.name.text, resolvedModuleName);
           });
         }
 
         if (node.importClause?.name) {
-          this.imports.set(node.importClause.name.text, moduleName);
+          this.imports.set(node.importClause.name.text, resolvedModuleName);
         }
       }
     });
   }
 
   /**
-   * Analyze a JSX element to detect if it's an error boundary
+   * Resolve import paths using project structure context
+   */
+  private resolveImportPath(importPath: string): string {
+    // Skip external packages
+    if (!importPath.startsWith(".") && !importPath.startsWith("/")) {
+      return importPath;
+    }
+
+    try {
+      const currentDir = path.dirname(this.sourceFile.fileName);
+      const projectStructure = this.config.getProjectStructure();
+
+      if (importPath.startsWith(".")) {
+        // Relative import
+        return path.resolve(currentDir, importPath);
+      } else {
+        // Absolute import from project root
+        const baseDir =
+          projectStructure?.detectedSourceDirectory || this.config.projectPath;
+        return path.resolve(baseDir, importPath.substring(1));
+      }
+    } catch (error) {
+      return importPath; // Fallback to original path
+    }
+  }
+
+  /**
+   * Analyze a JSX element to detect if it's an error boundary with enhanced library detection
    */
   public analyzeErrorBoundary(
     node: ts.JsxElement | ts.JsxSelfClosingElement
@@ -211,7 +244,7 @@ export class ErrorBoundaryAnalyzer {
   }
 
   /**
-   * Enhanced library detection with more patterns
+   * Enhanced library detection with more patterns and Next.js awareness
    */
   private detectErrorBoundaryLibrary(
     node: ts.JsxElement | ts.JsxSelfClosingElement
@@ -220,7 +253,7 @@ export class ErrorBoundaryAnalyzer {
       ? node.openingElement.tagName.getText()
       : node.tagName.getText();
 
-    // Enhanced library patterns
+    // Enhanced library patterns with Next.js specific ones
     const libraries: Record<string, ErrorBoundaryLibraryInfo> = {
       "react-error-boundary": {
         name: "react-error-boundary",
@@ -241,6 +274,20 @@ export class ErrorBoundaryAnalyzer {
         ]),
         importPath: "@sentry/react",
       },
+      "@sentry/nextjs": {
+        name: "Sentry Next.js",
+        source: "@sentry/nextjs",
+        type: "community",
+        features: new Set([
+          "monitoring",
+          "capture",
+          "breadcrumbs",
+          "user-feedback",
+          "server-side",
+          "edge-runtime",
+        ]),
+        importPath: "@sentry/nextjs",
+      },
       "react-query": {
         name: "React Query",
         source: "@tanstack/react-query",
@@ -259,7 +306,12 @@ export class ErrorBoundaryAnalyzer {
         name: "Next.js",
         source: "next",
         type: "official",
-        features: new Set(["app-router", "pages-router", "api-errors"]),
+        features: new Set([
+          "app-router",
+          "pages-router",
+          "api-errors",
+          "server-components",
+        ]),
         importPath: "next",
       },
     };
@@ -274,7 +326,7 @@ export class ErrorBoundaryAnalyzer {
       }
     }
 
-    // Pattern-based detection
+    // Pattern-based detection with Next.js awareness
     if (this.isReactErrorBoundaryComponent(node, tagName)) {
       return {
         ...libraries["react-error-boundary"],
@@ -283,9 +335,15 @@ export class ErrorBoundaryAnalyzer {
     }
 
     if (this.isSentryErrorBoundary(node, tagName)) {
+      const projectStructure = this.config.getProjectStructure();
+      const isNextJs = projectStructure?.projectType === "nextjs";
+      const sentryLib = isNextJs
+        ? libraries["@sentry/nextjs"]
+        : libraries["@sentry/react"];
+
       return {
-        ...libraries["@sentry/react"],
-        features: new Set(libraries["@sentry/react"].features),
+        ...sentryLib,
+        features: new Set(sentryLib.features),
       };
     }
 
@@ -293,6 +351,14 @@ export class ErrorBoundaryAnalyzer {
       return {
         ...libraries["react-query"],
         features: new Set(libraries["react-query"].features),
+      };
+    }
+
+    // Next.js specific error boundary detection
+    if (this.isNextJsErrorBoundary(node, tagName)) {
+      return {
+        ...libraries["next"],
+        features: new Set(libraries["next"].features),
       };
     }
 
@@ -311,6 +377,60 @@ export class ErrorBoundaryAnalyzer {
     }
 
     return undefined;
+  }
+
+  /**
+   * Detect Next.js specific error boundaries
+   */
+  private isNextJsErrorBoundary(
+    node: ts.JsxElement | ts.JsxSelfClosingElement,
+    tagName: string
+  ): boolean {
+    const projectStructure = this.config.getProjectStructure();
+
+    if (projectStructure?.projectType !== "nextjs") {
+      return false;
+    }
+
+    // Next.js App Router error components
+    if (projectStructure.routerType === "app") {
+      const appRouterErrorComponents = [
+        "ErrorBoundary",
+        "GlobalError",
+        "NotFound",
+      ];
+      if (appRouterErrorComponents.includes(tagName)) {
+        return true;
+      }
+
+      // Check if we're in an error.tsx or global-error.tsx file
+      const fileName = path.basename(
+        this.sourceFile.fileName,
+        path.extname(this.sourceFile.fileName)
+      );
+      if (fileName === "error" || fileName === "global-error") {
+        return true;
+      }
+    }
+
+    // Next.js Pages Router error components
+    if (projectStructure.routerType === "pages") {
+      const pagesRouterErrorComponents = ["Error", "ErrorPage"];
+      if (pagesRouterErrorComponents.includes(tagName)) {
+        return true;
+      }
+
+      // Check if we're in _error.tsx
+      const fileName = path.basename(
+        this.sourceFile.fileName,
+        path.extname(this.sourceFile.fileName)
+      );
+      if (fileName === "_error") {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
@@ -335,7 +455,7 @@ export class ErrorBoundaryAnalyzer {
   }
 
   /**
-   * Detect Sentry error boundary patterns
+   * Detect Sentry error boundary patterns with Next.js awareness
    */
   private isSentryErrorBoundary(
     node: ts.JsxElement | ts.JsxSelfClosingElement,
@@ -343,7 +463,12 @@ export class ErrorBoundaryAnalyzer {
   ): boolean {
     const sentryComponents = ["ErrorBoundary", "withErrorBoundary"];
     if (sentryComponents.includes(tagName) && this.imports.has(tagName)) {
-      return this.imports.get(tagName)?.includes("@sentry/react") || false;
+      const importSource = this.imports.get(tagName);
+      return (
+        importSource?.includes("@sentry/react") ||
+        importSource?.includes("@sentry/nextjs") ||
+        false
+      );
     }
 
     // Check for Sentry-specific props
@@ -357,7 +482,8 @@ export class ErrorBoundaryAnalyzer {
   private isQueryErrorResetBoundary(tagName: string): boolean | undefined {
     return (
       tagName === "QueryErrorResetBoundary" &&
-      this.imports.get(tagName)?.includes("@tanstack/react-query")
+      (this.imports.get(tagName)?.includes("@tanstack/react-query") ||
+        this.imports.get(tagName)?.includes("react-query"))
     );
   }
 
@@ -375,6 +501,7 @@ export class ErrorBoundaryAnalyzer {
       /^onReset$/i,
       /^resetOnPropsChange$/i,
       /^isolateErrorBoundary$/i,
+      /^onErrorCapture$/i, // React 16+ error boundary prop
     ];
 
     const attributes = ts.isJsxElement(node)
@@ -393,7 +520,7 @@ export class ErrorBoundaryAnalyzer {
   }
 
   /**
-   * Extract features from custom error boundary
+   * Extract features from custom error boundary with enhanced detection
    */
   private extractCustomFeatures(
     node: ts.JsxElement | ts.JsxSelfClosingElement
@@ -405,12 +532,21 @@ export class ErrorBoundaryAnalyzer {
     if (props.onError || props.handleError) features.add("error-handler");
     if (props.onReset || props.resetOnPropsChange) features.add("reset");
     if (props.isolateErrorBoundary) features.add("isolation");
+    if (props.onErrorCapture) features.add("error-capture");
+
+    // Check for Next.js specific features
+    const projectStructure = this.config.getProjectStructure();
+    if (projectStructure?.projectType === "nextjs") {
+      if (props.reset || props.retry) features.add("nextjs-reset");
+      if (this.sourceFile.fileName.includes("/app/"))
+        features.add("server-component-ready");
+    }
 
     return features;
   }
 
   /**
-   * Enhanced prop extraction with better type handling
+   * Enhanced prop extraction with better type handling and Next.js awareness
    */
   private extractEnhancedProps(
     node: ts.JsxElement | ts.JsxSelfClosingElement
@@ -457,7 +593,7 @@ export class ErrorBoundaryAnalyzer {
   }
 
   /**
-   * Find all error boundaries in a component node
+   * Find all error boundaries in a component node with enhanced detection
    */
   public findErrorBoundaries(componentNode: ts.Node): ErrorBoundary[] {
     const errorBoundaries: ErrorBoundary[] = [];

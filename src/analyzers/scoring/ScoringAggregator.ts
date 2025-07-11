@@ -30,6 +30,8 @@ import {
   calculateCodeMetricsScore,
   calculateDeduplicationScore,
   calculateComponentFlowScore,
+  calculateReactComplexityScore,
+  calculateContainerComplexityScore,
 } from "./ScoringMetrics";
 
 export interface IndividualScores {
@@ -49,6 +51,8 @@ export interface IndividualScores {
   deduplicationOpportunities: number;
   codeMetrics: number;
   magicNumbers: number;
+  reactComplexity: number; // NEW
+  containerComplexity: number; // NEW
 }
 
 export interface ScoringResult {
@@ -128,7 +132,7 @@ export class ScoringAggregator {
   }
 
   /**
-   * Calculate all individual metric scores including new metrics
+   * Calculate all individual metric scores including new React-specific metrics
    */
   private calculateIndividualScores(
     context: MetricCalculationContext
@@ -142,9 +146,9 @@ export class ScoringAggregator {
       cognitiveComplexity: 0, // Already included in cyclomaticComplexity
       maintainabilityIndex: calculateMaintainabilityScore(context),
       typeIssues: calculateTypeIssuesScore(context),
-      accessibilityIssues: calculateAccessibilityScore(context), // NEW
-      performanceIssues: calculatePerformanceScore(context), // NEW
-      seoProblems: calculateSEOScore(context),
+      accessibilityIssues: calculateAccessibilityScore(context),
+      performanceIssues: calculatePerformanceScore(context),
+      seoProblems: calculateSEOScore(context), // Uses updated version
       couplingDegree: calculateCouplingScore(context),
       zombieCode: calculateZombieCodeScore(context),
       translationIssues: calculateTranslationScore(context),
@@ -152,6 +156,8 @@ export class ScoringAggregator {
       deduplicationOpportunities: calculateDeduplicationScore(context),
       codeMetrics: calculateCodeMetricsScore(context),
       magicNumbers: calculateMagicNumbersScore(context),
+      reactComplexity: calculateReactComplexityScore(context), // NEW
+      containerComplexity: calculateContainerComplexityScore(context), // NEW
     };
   }
 
@@ -250,7 +256,7 @@ export class ScoringAggregator {
   }
 
   /**
-   * Calculate weighted score using adjusted weights
+   * Calculate weighted score using adjusted weights including new metrics
    */
   private calculateWeightedScore(
     scores: IndividualScores,
@@ -276,12 +282,14 @@ export class ScoringAggregator {
       scores.deduplicationOpportunities * weights.deduplicationOpportunities;
     weightedSum += scores.codeMetrics * weights.codeMetrics;
     weightedSum += scores.magicNumbers * weights.magicNumbers;
+    weightedSum += scores.reactComplexity * weights.reactComplexity; // NEW
+    weightedSum += scores.containerComplexity * weights.containerComplexity; // NEW
 
     return weightedSum;
   }
 
   /**
-   * Calculate weighted contributions for each metric
+   * Calculate weighted contributions for each metric including new metrics
    */
   private calculateWeightedContributions(
     scores: IndividualScores,
@@ -311,6 +319,9 @@ export class ScoringAggregator {
         scores.deduplicationOpportunities * weights.deduplicationOpportunities,
       codeMetrics: scores.codeMetrics * weights.codeMetrics,
       magicNumbers: scores.magicNumbers * weights.magicNumbers,
+      reactComplexity: scores.reactComplexity * weights.reactComplexity, // NEW
+      containerComplexity:
+        scores.containerComplexity * weights.containerComplexity, // NEW
     };
   }
 

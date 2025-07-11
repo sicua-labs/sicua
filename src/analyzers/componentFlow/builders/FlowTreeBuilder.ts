@@ -11,46 +11,41 @@ import {
 } from "../types";
 import { ComponentFlowScanner } from "../scanners/ComponentFlowScanner";
 import { RouteCoverageBuilder } from "./RouteCoverageBuilder";
+import { ComponentRelation, ScanResult } from "../../../types";
+import { ComponentLookupService } from "../../../core/componentLookupService";
+import { PathResolver } from "../../../parsers/pathResolver";
 
 /**
- * Builds complete component flow trees with coverage data and visualization metadata
+ * Builds complete component flow trees using optimized services for enhanced performance
  */
 export class FlowTreeBuilder {
   private componentScanner: ComponentFlowScanner;
   private coverageBuilder: RouteCoverageBuilder;
 
   constructor(
-    projectRoot: string,
-    srcDirectory: string,
     appDirectory: string,
-    components: Array<{
-      name: string;
-      usedBy: string[];
-      directory: string;
-      imports: string[];
-      exports: string[];
-      fullPath: string;
-      functions?: string[];
-      functionCalls?: { [key: string]: string[] };
-      content?: string;
-    }>,
+    lookupService: ComponentLookupService,
+    pathResolver: PathResolver,
+    scanResult: ScanResult,
     config?: ComponentFlowConfig
   ) {
+    // Initialize component scanner with optimized services
     this.componentScanner = new ComponentFlowScanner(
-      projectRoot,
-      srcDirectory,
-      components,
+      lookupService,
+      pathResolver,
+      scanResult,
       10, // maxDepth
-      config // Pass config to scanner
+      config
     );
+
     this.coverageBuilder = new RouteCoverageBuilder(appDirectory);
   }
 
   /**
-   * Builds complete flow tree for a single route
+   * Builds complete flow tree for a single route using optimized services
    */
   buildRouteFlowTree(routeStructure: RouteStructure): EnhancedRouteFlowTree {
-    // Build component flow tree
+    // Build component flow tree using optimized scanner
     const pageComponent = this.componentScanner.scanComponentFlow(
       routeStructure.pageFilePath
     );
@@ -65,7 +60,7 @@ export class FlowTreeBuilder {
     const coverageAnalysis =
       this.coverageBuilder.buildRouteCoverage(routeStructure);
 
-    // Calculate component statistics
+    // Calculate component statistics using optimized traversal
     const componentStats = this.calculateComponentStats(pageComponent);
 
     // Generate visualization metadata
@@ -75,13 +70,9 @@ export class FlowTreeBuilder {
       componentStats
     );
 
-    // FIXED: Do NOT add special files as children to the component tree
-    // Special files are architectural elements, not component children
-    // They are already properly tracked in the specialFiles property
-
     return {
       routePath: routeStructure.routePath,
-      pageComponent: pageComponent, // Keep original component tree without special files
+      pageComponent: pageComponent,
       specialFiles: coverageAnalysis.specialFilesCoverage,
       metadata: routeStructure.metadata,
       coverageAnalysis,
@@ -120,8 +111,8 @@ export class FlowTreeBuilder {
     routeStructure: RouteStructure,
     maxDepth: number = 3
   ): RouteFlowTree {
-    const originalMaxDepth = this.componentScanner["maxDepth"];
-    this.componentScanner["maxDepth"] = maxDepth;
+    const originalConfig = this.componentScanner.getConfig();
+    this.componentScanner.updateConfig({ maxDepth });
 
     try {
       const pageComponent = this.componentScanner.scanComponentFlow(
@@ -144,7 +135,7 @@ export class FlowTreeBuilder {
         metadata: routeStructure.metadata,
       };
     } finally {
-      this.componentScanner["maxDepth"] = originalMaxDepth;
+      this.componentScanner.updateConfig(originalConfig);
     }
   }
 
@@ -176,7 +167,7 @@ export class FlowTreeBuilder {
   }
 
   /**
-   * Calculates comprehensive component statistics - FIXED VERSION
+   * Calculates comprehensive component statistics with optimized traversal
    */
   private calculateComponentStats(
     rootComponent: ComponentFlowNode
@@ -191,7 +182,7 @@ export class FlowTreeBuilder {
       componentsByDepth: new Map<number, string[]>(),
     };
 
-    // NEW: Track visited components to prevent double counting
+    // Track visited components to prevent double counting
     const visitedComponents = new Set<string>();
 
     this.traverseComponentTree(rootComponent, 0, stats, visitedComponents);
@@ -200,7 +191,7 @@ export class FlowTreeBuilder {
   }
 
   /**
-   * Recursively traverses component tree to calculate statistics - FIXED VERSION
+   * Recursively traverses component tree to calculate statistics with optimized deduplication
    */
   private traverseComponentTree(
     component: ComponentFlowNode,
@@ -234,7 +225,7 @@ export class FlowTreeBuilder {
     }
     stats.componentsByDepth.get(depth)!.push(component.componentName);
 
-    // Count conditional renders for THIS component only
+    // Count conditional renders for this component only
     stats.conditionalRenderCount += component.conditionalRenders.length;
 
     // Collect all children to process (avoiding duplicates)
@@ -261,7 +252,7 @@ export class FlowTreeBuilder {
       childrenToProcess.set(childKey, child);
     }
 
-    // NOW traverse all unique children
+    // Now traverse all unique children
     for (const child of childrenToProcess.values()) {
       this.traverseComponentTree(child, depth + 1, stats, visitedComponents);
     }
@@ -287,12 +278,12 @@ export class FlowTreeBuilder {
   }
 
   /**
-   * Generates cluster information for visualization grouping
+   * Generates cluster information for visualization grouping with optimized traversal
    */
   private generateClusters(rootComponent: ComponentFlowNode): ClusterInfo[] {
     const clusters: ClusterInfo[] = [];
     let clusterId = 0;
-    const visitedNodes = new Set<string>(); // NEW: Prevent duplicate processing
+    const visitedNodes = new Set<string>(); // Prevent duplicate processing
 
     const processNode = (component: ComponentFlowNode, depth: number): void => {
       const nodeKey = `${component.componentName}:${component.filePath}`;
@@ -393,11 +384,11 @@ export class FlowTreeBuilder {
   }
 
   /**
-   * Calculates the total number of edges in the component tree - FIXED VERSION
+   * Calculates the total number of edges in the component tree with optimized traversal
    */
   private calculateEdgeCount(rootComponent: ComponentFlowNode): number {
     let edgeCount = 0;
-    const visitedNodes = new Set<string>(); // NEW: Prevent double counting
+    const visitedNodes = new Set<string>(); // Prevent double counting
 
     const processNode = (component: ComponentFlowNode): void => {
       const nodeKey = `${component.componentName}:${component.filePath}`;
@@ -427,25 +418,13 @@ export class FlowTreeBuilder {
   }
 
   /**
-   * REMOVED: enhanceComponentWithSpecialFiles method
-   *
-   * Previously this method was adding special files (ErrorBoundary, Loading, NotFound)
-   * as children to the component tree, which was architecturally incorrect.
-   *
-   * Special files are Next.js architectural elements that wrap or replace content,
-   * not components that are directly rendered as children in the JSX tree.
-   *
-   * They are properly tracked in the `specialFiles` property of the RouteFlowTree.
-   */
-
-  /**
-   * Extracts all possible conditional rendering paths - FIXED VERSION
+   * Extracts all possible conditional rendering paths with optimized traversal
    */
   private extractConditionalPaths(
     rootComponent: ComponentFlowNode
   ): ConditionalPath[] {
     const paths: ConditionalPath[] = [];
-    const visitedNodes = new Set<string>(); // NEW: Prevent infinite loops
+    const visitedNodes = new Set<string>(); // Prevent infinite loops
 
     const extractPaths = (
       component: ComponentFlowNode,

@@ -3,7 +3,7 @@ import * as path from "path";
 import { parse } from "@babel/parser";
 import traverse, { NodePath } from "@babel/traverse";
 import * as t from "@babel/types";
-import { ComponentRelation, ConfigManager, ScanResult } from "../types";
+import { ComponentRelation, IConfigManager, ScanResult } from "../types";
 import { Worker, isMainThread, parentPort, workerData } from "worker_threads";
 import * as os from "os";
 import { readJsonFile } from "../utils/common/pathUtils";
@@ -11,6 +11,7 @@ import {
   isReactComponentBabel,
   getBabelFunctionName,
 } from "../utils/ast/reactSpecific";
+import { ConfigManager } from "../core/configManager";
 
 let errorCount = 0;
 const MAX_ERROR_LOGS = 3;
@@ -24,10 +25,146 @@ interface ComponentInfo {
   functionCalls: { [key: string]: string[] };
 }
 
+interface ParseContext {
+  projectType: "nextjs" | "react";
+  routerType?: "app" | "pages";
+  sourceDirectory: string;
+  projectRoot: string;
+}
+
 /**
- * Parse file content using Babel AST for component analysis
+ * Create parse context from config and scan result
  */
-function parseFileContent(content: string, filePath: string) {
+function createParseContext(config: IConfigManager): ParseContext {
+  const projectStructure = config.getProjectStructure();
+
+  return {
+    projectType: projectStructure?.projectType || "react",
+    routerType: projectStructure?.routerType,
+    sourceDirectory: config.srcDir,
+    projectRoot: config.projectPath,
+  };
+}
+
+/**
+ * Normalize file path relative to appropriate base directory
+ */
+function normalizeFilePath(filePath: string, context: ParseContext): string {
+  // Try to make path relative to source directory first
+  if (filePath.startsWith(context.sourceDirectory)) {
+    const relativePath = path.relative(context.sourceDirectory, filePath);
+    return relativePath || ".";
+  }
+
+  // Fallback to project root
+  const relativePath = path.relative(context.projectRoot, filePath);
+  return relativePath || ".";
+}
+
+/**
+ * Extract directory for component relation
+ */
+function extractDirectory(filePath: string, context: ParseContext): string {
+  const normalizedPath = normalizeFilePath(filePath, context);
+  const directory = path.dirname(normalizedPath);
+
+  // Handle root directory cases
+  if (directory === "." || directory === "") {
+    return "/";
+  }
+
+  return directory;
+}
+
+/**
+ * Resolve import paths considering project structure
+ */
+function resolveImportPath(
+  importPath: string,
+  currentFile: string,
+  context: ParseContext
+): string {
+  // Skip external packages
+  if (!importPath.startsWith(".") && !importPath.startsWith("/")) {
+    return importPath;
+  }
+
+  try {
+    const currentDir = path.dirname(currentFile);
+    let resolvedPath: string;
+
+    if (importPath.startsWith(".")) {
+      // Relative import
+      resolvedPath = path.resolve(currentDir, importPath);
+    } else {
+      // Absolute import from project root
+      resolvedPath = path.resolve(context.projectRoot, importPath.substring(1));
+    }
+
+    // Normalize the resolved path
+    return normalizeFilePath(resolvedPath, context);
+  } catch (error) {
+    console.warn(
+      `Failed to resolve import path: ${importPath} from ${currentFile}`
+    );
+    return importPath;
+  }
+}
+
+/**
+ * Enhanced component detection based on project structure - but analyze ALL files for SAST
+ */
+function shouldTreatAsComponent(
+  filePath: string,
+  context: ParseContext
+): boolean {
+  const fileName = path.basename(filePath, path.extname(filePath));
+  const normalizedPath = normalizeFilePath(filePath, context);
+
+  // Next.js specific component detection
+  if (context.projectType === "nextjs") {
+    // App router specific files
+    if (context.routerType === "app") {
+      const appRouterFiles = [
+        "layout",
+        "page",
+        "loading",
+        "error",
+        "not-found",
+        "template",
+        "default",
+      ];
+      if (appRouterFiles.includes(fileName.toLowerCase())) {
+        return true;
+      }
+    }
+
+    // Pages router specific files
+    if (context.routerType === "pages") {
+      const pagesRouterFiles = ["_app", "_document", "_error", "404", "500"];
+      if (pagesRouterFiles.includes(fileName)) {
+        return true;
+      }
+    }
+  }
+
+  // General component detection - but still analyze ALL files for security
+  const isReactFile = filePath.endsWith(".tsx") || filePath.endsWith(".jsx");
+  const isComponentName = /^[A-Z]/.test(fileName); // Starts with capital letter
+  const isInComponentsDir = normalizedPath.includes("component");
+
+  // For SAST purposes, we want to analyze all files, but identify what's likely a component
+  return isReactFile && (isComponentName || isInComponentsDir);
+}
+
+/**
+ * Parse file content using Babel AST for component analysis with enhanced project structure awareness
+ */
+function parseFileContent(
+  content: string,
+  filePath: string,
+  context: ParseContext
+) {
   const analysis = {
     imports: [] as string[],
     lazyImports: [] as string[],
@@ -59,13 +196,14 @@ function parseFileContent(content: string, filePath: string) {
     traverse(ast, {
       ImportDeclaration(path) {
         const importPath = path.node.source.value;
-        analysis.imports.push(importPath);
+        const resolvedPath = resolveImportPath(importPath, filePath, context);
+        analysis.imports.push(resolvedPath);
       },
 
       CallExpression(path) {
         const callName = getCallExpressionName(path.node);
 
-        // Handle lazy imports
+        // Handle lazy imports with enhanced resolution
         if (callName === "lazy" || callName === "React.lazy") {
           const arg = path.node.arguments[0];
           if (t.isArrowFunctionExpression(arg) || t.isFunctionExpression(arg)) {
@@ -73,7 +211,12 @@ function parseFileContent(content: string, filePath: string) {
             if (t.isCallExpression(body) && t.isImport(body.callee)) {
               const importArg = body.arguments[0];
               if (t.isStringLiteral(importArg)) {
-                analysis.lazyImports.push(importArg.value);
+                const resolvedPath = resolveImportPath(
+                  importArg.value,
+                  filePath,
+                  context
+                );
+                analysis.lazyImports.push(resolvedPath);
               }
             }
           }
@@ -110,7 +253,12 @@ function parseFileContent(content: string, filePath: string) {
         }
 
         if (path.node.source) {
-          analysis.imports.push(path.node.source.value);
+          const resolvedPath = resolveImportPath(
+            path.node.source.value,
+            filePath,
+            context
+          );
+          analysis.imports.push(resolvedPath);
         }
 
         // Handle exported function/class declarations
@@ -121,7 +269,10 @@ function parseFileContent(content: string, filePath: string) {
             const functionName = declaration.id.name;
             analysis.exports.push(functionName);
 
-            if (isReactComponentBabel(declaration, functionName)) {
+            if (
+              isReactComponentBabel(declaration, functionName) ||
+              shouldTreatAsComponent(filePath, context)
+            ) {
               const componentInfo = createComponentInfo(
                 functionName,
                 false,
@@ -140,7 +291,8 @@ function parseFileContent(content: string, filePath: string) {
                 if (
                   (t.isArrowFunctionExpression(declarator.init) ||
                     t.isFunctionExpression(declarator.init)) &&
-                  isReactComponentBabel(declarator.init, varName)
+                  (isReactComponentBabel(declarator.init, varName) ||
+                    shouldTreatAsComponent(filePath, context))
                 ) {
                   const componentInfo = createComponentInfo(
                     varName,
@@ -175,13 +327,16 @@ function parseFileContent(content: string, filePath: string) {
           }
         }
 
-        // Handle default exported components
+        // Handle default exported components with project structure awareness
         if (
           t.isFunctionDeclaration(path.node.declaration) &&
           path.node.declaration.id
         ) {
           const functionName = path.node.declaration.id.name;
-          if (isReactComponentBabel(path.node.declaration, functionName)) {
+          if (
+            isReactComponentBabel(path.node.declaration, functionName) ||
+            shouldTreatAsComponent(filePath, context)
+          ) {
             const componentInfo = createComponentInfo(functionName, true, true);
             analysis.components.set(functionName, componentInfo);
           }
@@ -192,6 +347,14 @@ function parseFileContent(content: string, filePath: string) {
           if (analysis.components.has(componentName)) {
             const component = analysis.components.get(componentName)!;
             component.isDefault = true;
+          } else if (shouldTreatAsComponent(filePath, context)) {
+            // Create component info for files that should be treated as components
+            const componentInfo = createComponentInfo(
+              componentName,
+              true,
+              true
+            );
+            analysis.components.set(componentName, componentInfo);
           }
         }
       },
@@ -201,7 +364,10 @@ function parseFileContent(content: string, filePath: string) {
           if (path.node.id && t.isIdentifier(path.node.id)) {
             const functionName = path.node.id.name;
 
-            if (isReactComponentBabel(path.node, functionName)) {
+            if (
+              isReactComponentBabel(path.node, functionName) ||
+              shouldTreatAsComponent(filePath, context)
+            ) {
               currentComponent = functionName;
               if (!analysis.components.has(functionName)) {
                 const componentInfo = createComponentInfo(
@@ -228,7 +394,11 @@ function parseFileContent(content: string, filePath: string) {
         enter(path: NodePath<t.ArrowFunctionExpression>) {
           const functionName = getBabelFunctionName(path.node, path.parent);
 
-          if (functionName && isReactComponentBabel(path.node, functionName)) {
+          if (
+            functionName &&
+            (isReactComponentBabel(path.node, functionName) ||
+              shouldTreatAsComponent(filePath, context))
+          ) {
             currentComponent = functionName;
             if (!analysis.components.has(functionName)) {
               const componentInfo = createComponentInfo(
@@ -258,7 +428,8 @@ function parseFileContent(content: string, filePath: string) {
             if (
               (t.isArrowFunctionExpression(declaration.init) ||
                 t.isFunctionExpression(declaration.init)) &&
-              isReactComponentBabel(declaration.init, varName)
+              (isReactComponentBabel(declaration.init, varName) ||
+                shouldTreatAsComponent(filePath, context))
             ) {
               if (!analysis.components.has(varName)) {
                 const componentInfo = createComponentInfo(
@@ -318,17 +489,19 @@ function getCallExpressionName(node: t.CallExpression): string {
 }
 
 /**
- * Process a single file and return multiple ComponentRelations
+ * Process a single file and return multiple ComponentRelations with enhanced path handling
  */
 export async function processFile(
   filePath: string,
   srcPath: string,
-  config: ConfigManager,
+  config: IConfigManager,
   scanResult: ScanResult
 ): Promise<ComponentRelation[]> {
   try {
     const content = scanResult.fileContents.get(filePath) || "";
-    const directory = path.relative(srcPath, path.dirname(filePath));
+    const context = createParseContext(config);
+    const directory = extractDirectory(filePath, context);
+
     const {
       imports,
       lazyImports,
@@ -337,14 +510,20 @@ export async function processFile(
       components,
       globalFunctions,
       globalFunctionCalls,
-    } = parseFileContent(content, filePath);
+    } = parseFileContent(content, filePath, context);
 
     const componentRelations: ComponentRelation[] = [];
 
     // Create ComponentRelation for each detected component
     for (const [componentName, componentInfo] of components) {
       const usedBy = [...imports, ...lazyImports, ...hocConnections]
-        .map((imp) => path.basename(imp, path.extname(imp)))
+        .map((imp) => {
+          // Handle both relative and absolute imports
+          if (imp.startsWith(".")) {
+            return path.basename(imp, path.extname(imp));
+          }
+          return path.basename(imp, path.extname(imp));
+        })
         .filter((imp) => imp !== componentName);
 
       const componentRelation: ComponentRelation = {
@@ -362,15 +541,21 @@ export async function processFile(
       componentRelations.push(componentRelation);
     }
 
-    // If no components detected, create a single relation based on filename (fallback)
+    // Always create fallback relation for SAST analysis - analyze ALL files
     if (componentRelations.length === 0) {
-      const fallbackName = path.basename(filePath, path.extname(filePath));
+      const fileName = path.basename(filePath, path.extname(filePath));
+
       const usedBy = [...imports, ...lazyImports, ...hocConnections]
-        .map((imp) => path.basename(imp, path.extname(imp)))
-        .filter((imp) => imp !== fallbackName);
+        .map((imp) => {
+          if (imp.startsWith(".")) {
+            return path.basename(imp, path.extname(imp));
+          }
+          return path.basename(imp, path.extname(imp));
+        })
+        .filter((imp) => imp !== fileName);
 
       const fallbackRelation: ComponentRelation = {
-        name: fallbackName,
+        name: fileName,
         usedBy,
         directory,
         imports,
@@ -412,12 +597,12 @@ export async function processFile(
 }
 
 /**
- * Parse files using the unified scan data
+ * Parse files using the unified scan data with enhanced project structure support
  */
 export async function parseFiles(
   scanResult: ScanResult,
   srcPath: string,
-  config: ConfigManager
+  config: IConfigManager
 ): Promise<ComponentRelation[]> {
   if (isMainThread) {
     errorCount = 0;
@@ -429,7 +614,17 @@ export async function parseFiles(
     return await processWithWorkers(filePaths, srcPath, config, scanResult);
   } else {
     // Worker thread - process the chunk
-    const { chunk, srcPath, config, fileContents, fileMetadata } = workerData;
+    const {
+      chunk,
+      srcPath,
+      config: configData,
+      fileContents,
+      fileMetadata,
+    } = workerData;
+
+    // Reconstruct config manager in worker
+    const config = new ConfigManager(configData.projectPath);
+    Object.assign(config, configData);
 
     const workerScanResult: ScanResult = {
       filePaths: chunk,
@@ -475,7 +670,7 @@ export async function parseFiles(
 async function processWithWorkers(
   filePaths: string[],
   srcPath: string,
-  config: ConfigManager,
+  config: IConfigManager,
   scanResult: ScanResult
 ): Promise<ComponentRelation[]> {
   const numWorkers = Math.min(os.cpus().length, 6);
@@ -489,7 +684,15 @@ async function processWithWorkers(
           workerData: {
             chunk,
             srcPath,
-            config,
+            config: {
+              projectPath: config.projectPath,
+              srcDir: config.srcDir,
+              fileExtensions: config.fileExtensions,
+              rootComponentNames: config.rootComponentNames,
+              outputFileName: config.outputFileName,
+              // Include project structure info for workers
+              _projectStructure: config.getProjectStructure(),
+            },
             fileContents: Object.fromEntries(
               Array.from(scanResult.fileContents.entries()).filter(([path]) =>
                 chunk.includes(path)
@@ -554,7 +757,17 @@ function chunkArray<T>(array: T[], size: number): T[][] {
 
 // Worker thread entry point
 if (!isMainThread) {
-  const { chunk, srcPath, config, fileContents, fileMetadata } = workerData;
+  const {
+    chunk,
+    srcPath,
+    config: configData,
+    fileContents,
+    fileMetadata,
+  } = workerData;
+
+  // Reconstruct config manager in worker
+  const config = new ConfigManager(configData.projectPath);
+  Object.assign(config, configData);
 
   const workerScanResult: ScanResult = {
     filePaths: chunk,

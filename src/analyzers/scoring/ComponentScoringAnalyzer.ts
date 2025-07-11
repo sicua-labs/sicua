@@ -27,6 +27,7 @@ import { MetricCalculationContext } from "./ScoringMetrics";
 import { ScoringAggregator, ScoringResult } from "./ScoringAggregator";
 import { GeneralAnalysisResult } from "../general/types/generalAnalyzer.types";
 import { ComponentFlowAnalysisResult } from "../componentFlow/types";
+import { ComponentFilter } from "../seo/utils/ComponentFilter";
 
 export interface ScoredComponentRelation extends ComponentRelation {
   score: number;
@@ -102,7 +103,7 @@ export class ComponentScoringAnalyzer {
   }
 
   /**
-   * Calculate top scoring (most problematic) components with enhanced filtering
+   * Calculate top scoring (most problematic) components with component filtering
    */
   async calculateTopScoringComponents(
     components: ComponentRelation[],
@@ -118,25 +119,33 @@ export class ComponentScoringAnalyzer {
   }
 
   /**
-   * Generate a comprehensive scoring report with file type awareness
+   * Generate a comprehensive scoring report with relative normalization
    */
   async generateScoringReport(
     components: ComponentRelation[],
     analyzerResults: AnalyzerResults
   ): Promise<ComponentScoringReport> {
-    const scoredComponents: ScoredComponentRelation[] = [];
-    const detailedResults = new Map<string, ScoringResult>();
+    // Filter to only include actual React components
+    const actualComponents = ComponentFilter.filterComponents(components);
+
+    const rawScoredComponents: Array<{
+      component: ComponentRelation;
+      rawScore: number;
+      scoringResult: ScoringResult;
+    }> = [];
     const excludedComponents = {
       constants: 0,
       configs: 0,
       types: 0,
       total: 0,
     };
-    const fileTypeStats: Record<string, { count: number; totalScore: number }> =
-      {};
 
-    // Score each component
-    for (const component of components) {
+    // Count filtered out components
+    const filteredOut = components.length - actualComponents.length;
+    excludedComponents.total = filteredOut;
+
+    // First pass: Calculate raw scores for all components
+    for (const component of actualComponents) {
       const fileType = getFileType(component.name, component.fullPath);
 
       // Skip if file type is in exclusion list
@@ -148,7 +157,7 @@ export class ComponentScoringAnalyzer {
 
       const context: MetricCalculationContext = {
         component,
-        allComponents: components,
+        allComponents: actualComponents,
         ...analyzerResults,
       };
 
@@ -156,30 +165,53 @@ export class ComponentScoringAnalyzer {
 
       // Only include components meeting minimum score threshold
       if (scoringResult.finalScore >= (this.options.minimumScore || 0)) {
-        const scoredComponent: ScoredComponentRelation = {
-          ...component,
-          score: scoringResult.finalScore,
-        };
-
-        scoredComponents.push(scoredComponent);
-
-        // Track file type statistics
-        if (!fileTypeStats[fileType]) {
-          fileTypeStats[fileType] = { count: 0, totalScore: 0 };
-        }
-        fileTypeStats[fileType].count++;
-        fileTypeStats[fileType].totalScore += scoringResult.finalScore;
-
-        if (this.options.includeScoreBreakdown) {
-          detailedResults.set(component.name, scoringResult);
-        }
+        rawScoredComponents.push({
+          component,
+          rawScore: scoringResult.finalScore,
+          scoringResult,
+        });
       }
     }
 
-    // Sort by score (highest first - most problematic)
+    // Apply relative normalization
+    const normalizedComponents =
+      this.applyRelativeNormalization(rawScoredComponents);
+
+    // Build final scored components with file type stats
+    const fileTypeStats: Record<string, { count: number; totalScore: number }> =
+      {};
+    const detailedResults = new Map<string, ScoringResult>();
+
+    const scoredComponents: ScoredComponentRelation[] =
+      normalizedComponents.map(
+        ({ component, normalizedScore, scoringResult }) => {
+          const fileType = getFileType(component.name, component.fullPath);
+
+          // Track file type statistics using normalized scores
+          if (!fileTypeStats[fileType]) {
+            fileTypeStats[fileType] = { count: 0, totalScore: 0 };
+          }
+          fileTypeStats[fileType].count++;
+          fileTypeStats[fileType].totalScore += normalizedScore;
+
+          if (this.options.includeScoreBreakdown) {
+            detailedResults.set(component.name, {
+              ...scoringResult,
+              finalScore: normalizedScore, // Use normalized score in breakdown
+            });
+          }
+
+          return {
+            ...component,
+            score: normalizedScore,
+          };
+        }
+      );
+
+    // Sort by normalized score (highest first - most problematic)
     scoredComponents.sort((a, b) => b.score - a.score);
 
-    // Calculate statistics with file type awareness
+    // Calculate statistics with normalized scores
     const statistics = this.calculateStatistics(
       scoredComponents,
       fileTypeStats
@@ -198,12 +230,195 @@ export class ComponentScoringAnalyzer {
   }
 
   /**
-   * Get detailed scoring breakdown for a specific component
+   * Apply relative normalization to create meaningful comparative scores
+   */
+  private applyRelativeNormalization(
+    rawScoredComponents: Array<{
+      component: ComponentRelation;
+      rawScore: number;
+      scoringResult: ScoringResult;
+    }>
+  ): Array<{
+    component: ComponentRelation;
+    normalizedScore: number;
+    scoringResult: ScoringResult;
+  }> {
+    if (rawScoredComponents.length === 0) {
+      return [];
+    }
+
+    const rawScores = rawScoredComponents.map((item) => item.rawScore);
+    const maxScore = Math.max(...rawScores);
+    const minScore = Math.min(...rawScores);
+    const scoreRange = maxScore - minScore;
+
+    // Calculate percentiles for better distribution
+    const sortedScores = [...rawScores].sort((a, b) => a - b);
+    const q1Index = Math.floor(sortedScores.length * 0.25);
+    const q3Index = Math.floor(sortedScores.length * 0.75);
+    const q1Score = sortedScores[q1Index];
+    const q3Score = sortedScores[q3Index];
+
+    return rawScoredComponents.map(({ component, rawScore, scoringResult }) => {
+      let normalizedScore = 0;
+
+      if (scoreRange > 0) {
+        // Method 1: Min-max normalization to 0-100 scale
+        const minMaxNormalized = ((rawScore - minScore) / scoreRange) * 100;
+
+        // Method 2: Percentile-based normalization for better distribution
+        let percentileScore = 0;
+        if (rawScore <= q1Score) {
+          // Bottom 25% -> 0-25 range
+          percentileScore = (rawScore / q1Score) * 25;
+        } else if (rawScore <= q3Score) {
+          // Middle 50% -> 25-75 range
+          percentileScore =
+            25 + ((rawScore - q1Score) / (q3Score - q1Score)) * 50;
+        } else {
+          // Top 25% -> 75-100 range
+          percentileScore =
+            75 + ((rawScore - q3Score) / (maxScore - q3Score)) * 25;
+        }
+
+        // Blend the two approaches: 70% min-max, 30% percentile
+        normalizedScore = minMaxNormalized * 0.7 + percentileScore * 0.3;
+
+        // Apply logarithmic scaling for better spread in the upper range
+        if (normalizedScore > 50) {
+          const upperRange = normalizedScore - 50;
+          const logScaled =
+            50 + (upperRange * Math.log10(upperRange + 1)) / Math.log10(51);
+          normalizedScore = Math.min(logScaled, 100);
+        }
+      } else {
+        // All components have the same score - give them middle scores
+        normalizedScore = 50;
+      }
+
+      return {
+        component,
+        normalizedScore: Math.round(normalizedScore * 100) / 100,
+        scoringResult,
+      };
+    });
+  }
+
+  /**
+   * Enhanced summary report that explains the normalization
+   */
+  generateSummaryReport(report: ComponentScoringReport): string {
+    const summary: string[] = [];
+
+    summary.push("Component Scoring Analysis Summary (Relative Scoring)");
+    summary.push("=====================================================");
+    summary.push("");
+
+    summary.push(
+      `Total Components Analyzed: ${report.scoringStatistics.totalComponents}`
+    );
+    summary.push(
+      `Average Score: ${report.scoringStatistics.averageScore}/100 (normalized)`
+    );
+    summary.push(
+      `Highest Score: ${report.scoringStatistics.highestScore}/100 (most problematic)`
+    );
+    summary.push(
+      `Lowest Score: ${report.scoringStatistics.lowestScore}/100 (least problematic)`
+    );
+    summary.push("");
+
+    summary.push(
+      "📊 Scoring Method: Relative normalization within project context"
+    );
+    summary.push(
+      "   • Scores are normalized to 0-100 based on component comparison"
+    );
+    summary.push(
+      "   • Higher scores indicate more problematic components relative to your project"
+    );
+    summary.push(
+      "   • A score of 80+ means this component is among the most complex in your codebase"
+    );
+    summary.push("");
+
+    // File type distribution
+    if (Object.keys(report.scoringStatistics.fileTypeDistribution).length > 0) {
+      summary.push("Score by File Type (normalized):");
+      Object.entries(report.scoringStatistics.fileTypeDistribution)
+        .sort(([, a], [, b]) => b.averageScore - a.averageScore)
+        .forEach(([fileType, stats]) => {
+          summary.push(
+            `  ${fileType}: ${stats.averageScore}/100 (${stats.count} files)`
+          );
+        });
+      summary.push("");
+    }
+
+    // Excluded components
+    if (report.excludedComponents && report.excludedComponents.total > 0) {
+      summary.push("Excluded Components:");
+      if (report.excludedComponents.constants > 0) {
+        summary.push(
+          `  Constants files: ${report.excludedComponents.constants}`
+        );
+      }
+      if (report.excludedComponents.configs > 0) {
+        summary.push(`  Config files: ${report.excludedComponents.configs}`);
+      }
+      if (report.excludedComponents.types > 0) {
+        summary.push(`  Type files: ${report.excludedComponents.types}`);
+      }
+      summary.push(`  Total excluded: ${report.excludedComponents.total}`);
+      summary.push("");
+    }
+
+    summary.push("Score Distribution (relative to your project):");
+    summary.push(
+      `  Critical (80-100): ${report.scoringStatistics.scoreDistribution.CRITICAL} components - Highest complexity in your project`
+    );
+    summary.push(
+      `  High (60-79): ${report.scoringStatistics.scoreDistribution.HIGH} components - Above average complexity`
+    );
+    summary.push(
+      `  Medium (40-59): ${report.scoringStatistics.scoreDistribution.MEDIUM} components - Average complexity`
+    );
+    summary.push(
+      `  Low (20-39): ${report.scoringStatistics.scoreDistribution.LOW} components - Below average complexity`
+    );
+    summary.push(
+      `  Minimal (0-19): ${report.scoringStatistics.scoreDistribution.MINIMAL} components - Lowest complexity in your project`
+    );
+    summary.push("");
+
+    summary.push(
+      "Top 10 Most Problematic Components (relative to your project):"
+    );
+    const top10 = report.topComponents.slice(0, 10);
+    top10.forEach((component, index) => {
+      const fileType = getFileType(component.name, component.fullPath);
+      summary.push(
+        `  ${index + 1}. ${component.name} (${
+          component.score
+        }/100) [${fileType}]`
+      );
+    });
+
+    return summary.join("\n");
+  }
+
+  /**
+   * Get detailed scoring breakdown for a specific component with filtering
    */
   async getComponentScoreBreakdown(
     component: ComponentRelation,
     analyzerResults: AnalyzerResults
   ): Promise<string> {
+    // Check if this is an actual component
+    if (!ComponentFilter.isActualComponent(component)) {
+      return `Component "${component.name}" is not a React component (utility function, hook, or handler) and was excluded from scoring.`;
+    }
+
     const context: MetricCalculationContext = {
       component,
       allComponents: [component], // Minimal context for single component analysis
@@ -584,86 +799,5 @@ export class ComponentScoringAnalyzer {
       (component) =>
         getFileType(component.name, component.fullPath) === fileType
     );
-  }
-
-  /**
-   * Generate a summary report for logging/debugging - ENHANCED
-   */
-  generateSummaryReport(report: ComponentScoringReport): string {
-    const summary: string[] = [];
-
-    summary.push("Component Scoring Analysis Summary");
-    summary.push("=====================================");
-    summary.push("");
-
-    summary.push(
-      `Total Components Analyzed: ${report.scoringStatistics.totalComponents}`
-    );
-    summary.push(`Average Score: ${report.scoringStatistics.averageScore}/100`);
-    summary.push(`Highest Score: ${report.scoringStatistics.highestScore}/100`);
-    summary.push(`Lowest Score: ${report.scoringStatistics.lowestScore}/100`);
-    summary.push("");
-
-    // File type distribution
-    if (Object.keys(report.scoringStatistics.fileTypeDistribution).length > 0) {
-      summary.push("Score by File Type:");
-      Object.entries(report.scoringStatistics.fileTypeDistribution)
-        .sort(([, a], [, b]) => b.averageScore - a.averageScore)
-        .forEach(([fileType, stats]) => {
-          summary.push(
-            `  ${fileType}: ${stats.averageScore}/100 (${stats.count} files)`
-          );
-        });
-      summary.push("");
-    }
-
-    // Excluded components
-    if (report.excludedComponents && report.excludedComponents.total > 0) {
-      summary.push("Excluded Components:");
-      if (report.excludedComponents.constants > 0) {
-        summary.push(
-          `  Constants files: ${report.excludedComponents.constants}`
-        );
-      }
-      if (report.excludedComponents.configs > 0) {
-        summary.push(`  Config files: ${report.excludedComponents.configs}`);
-      }
-      if (report.excludedComponents.types > 0) {
-        summary.push(`  Type files: ${report.excludedComponents.types}`);
-      }
-      summary.push(`  Total excluded: ${report.excludedComponents.total}`);
-      summary.push("");
-    }
-
-    summary.push("Score Distribution:");
-    summary.push(
-      `  Critical (80-100): ${report.scoringStatistics.scoreDistribution.CRITICAL} components`
-    );
-    summary.push(
-      `  High (60-79): ${report.scoringStatistics.scoreDistribution.HIGH} components`
-    );
-    summary.push(
-      `  Medium (40-59): ${report.scoringStatistics.scoreDistribution.MEDIUM} components`
-    );
-    summary.push(
-      `  Low (20-39): ${report.scoringStatistics.scoreDistribution.LOW} components`
-    );
-    summary.push(
-      `  Minimal (0-19): ${report.scoringStatistics.scoreDistribution.MINIMAL} components`
-    );
-    summary.push("");
-
-    summary.push("Top 10 Most Problematic Components:");
-    const top10 = report.topComponents.slice(0, 10);
-    top10.forEach((component, index) => {
-      const fileType = getFileType(component.name, component.fullPath);
-      summary.push(
-        `  ${index + 1}. ${component.name} (${
-          component.score
-        }/100) [${fileType}]`
-      );
-    });
-
-    return summary.join("\n");
   }
 }

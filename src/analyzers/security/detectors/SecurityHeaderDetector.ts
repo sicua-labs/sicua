@@ -96,66 +96,58 @@ export class SecurityHeaderDetector extends BaseDetector {
   }
 
   async detect(
-  scanResult: ScanResult,
-  context: AnalysisContext
-): Promise<Vulnerability[]> {
-  const vulnerabilities: Vulnerability[] = [];
+    scanResult: ScanResult,
+    context: AnalysisContext
+  ): Promise<Vulnerability[]> {
+    const vulnerabilities: Vulnerability[] = [];
 
-  // DEBUG: Look for any config-related files
-  const allConfigFiles = scanResult.filePaths.filter((filePath) =>
-    filePath.includes('next.config')
-  );
-  console.log(`[SecurityHeaderDetector] Files containing 'next.config':`, allConfigFiles);
+    // DEBUG: Look for any config-related files
+    const allConfigFiles = scanResult.filePaths.filter((filePath) =>
+      filePath.includes("next.config")
+    );
 
-  // DEBUG: Check a few sample file paths to understand the structure
-  const samplePaths = scanResult.filePaths.slice(0, 5);
-  console.log(`[SecurityHeaderDetector] Sample file paths:`, samplePaths);
+    // DEBUG: Check a few sample file paths to understand the structure
+    const samplePaths = scanResult.filePaths.slice(0, 5);
 
-  // DEBUG: Check if we can find any .ts files at root level
-  const rootTsFiles = scanResult.filePaths.filter((filePath) => {
-    const normalized = filePath.replace(/\\/g, '/');
-    const parts = normalized.split('/');
-    return parts[parts.length - 1].endsWith('.ts') && !normalized.includes('/');
-  });
-  console.log(`[SecurityHeaderDetector] Root .ts files:`, rootTsFiles);
-
-  // Look specifically for Next.js config files
-  const configFiles = scanResult.filePaths.filter((filePath) =>
-    /next\.config\.(js|ts|mjs)$/.test(filePath)
-  );
-
-  // DEBUG: Log what we found
-  console.log(`[SecurityHeaderDetector] Found ${configFiles.length} config files:`, configFiles);
-  console.log(`[SecurityHeaderDetector] Total files scanned: ${scanResult.filePaths.length}`);
-  
-  if (configFiles.length === 0) {
-    // Check if this is actually a Next.js project before flagging
-    const hasNextJsIndicators = this.isNextJsProject(scanResult);
-    console.log(`[SecurityHeaderDetector] Is Next.js project: ${hasNextJsIndicators}`);
-
-    if (hasNextJsIndicators) {
-      vulnerabilities.push(
-        this.createMissingConfigVulnerability(context.projectPath)
+    // DEBUG: Check if we can find any .ts files at root level
+    const rootTsFiles = scanResult.filePaths.filter((filePath) => {
+      const normalized = filePath.replace(/\\/g, "/");
+      const parts = normalized.split("/");
+      return (
+        parts[parts.length - 1].endsWith(".ts") && !normalized.includes("/")
       );
+    });
+
+    // Look specifically for Next.js config files
+    const configFiles = scanResult.filePaths.filter((filePath) =>
+      /next\.config\.(js|ts|mjs)$/.test(filePath)
+    );
+
+    if (configFiles.length === 0) {
+      // Check if this is actually a Next.js project before flagging
+      const hasNextJsIndicators = this.isNextJsProject(scanResult);
+
+      if (hasNextJsIndicators) {
+        vulnerabilities.push(
+          this.createMissingConfigVulnerability(context.projectPath)
+        );
+      }
+      return vulnerabilities;
     }
+
+    for (const configPath of configFiles) {
+      const content = scanResult.fileContents.get(configPath);
+      if (!content) {
+        continue;
+      }
+
+      // Analyze the config file for security headers
+      const configAnalysis = this.analyzeNextConfigFile(configPath, scanResult);
+      vulnerabilities.push(...configAnalysis);
+    }
+
     return vulnerabilities;
   }
-
-  for (const configPath of configFiles) {
-    console.log(`[SecurityHeaderDetector] Analyzing config: ${configPath}`);
-    const content = scanResult.fileContents.get(configPath);
-    if (!content) {
-      console.log(`[SecurityHeaderDetector] No content found for: ${configPath}`);
-      continue;
-    }
-
-    // Analyze the config file for security headers
-    const configAnalysis = this.analyzeNextConfigFile(configPath, scanResult);
-    vulnerabilities.push(...configAnalysis);
-  }
-
-  return vulnerabilities;
-}
 
   /**
    * Check if this is actually a Next.js project

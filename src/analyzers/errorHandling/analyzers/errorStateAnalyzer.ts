@@ -8,21 +8,26 @@ import { ErrorPatternUtils } from "../../../utils/error_specific/errorPatternUti
 import { StateAnalysisUtils } from "../../../utils/common/stateAnalysisUtils";
 import { traverseAST } from "../../../utils/ast/traversal";
 import { ErrorStatesMap } from "../types/internalTypes";
+import { IConfigManager } from "../../../types";
+import * as path from "path";
+import { ConfigManager } from "../../../core/configManager";
 
 /**
- * Enhanced analyzer for error state management in React components
+ * Enhanced analyzer for error state management in React components with project structure awareness
  */
 export class ErrorStateAnalyzer {
   private sourceFile: ts.SourceFile;
   private imports: Map<string, string> = new Map();
+  private config: IConfigManager;
 
-  constructor(sourceFile: ts.SourceFile) {
+  constructor(sourceFile: ts.SourceFile, config?: IConfigManager) {
     this.sourceFile = sourceFile;
+    this.config = config || new ConfigManager(process.cwd());
     this.analyzeImports();
   }
 
   /**
-   * Analyze import statements to understand state management libraries
+   * Analyze import statements to understand state management libraries with enhanced resolution
    */
   private analyzeImports(): void {
     traverseAST(this.sourceFile, (node) => {
@@ -31,25 +36,53 @@ export class ErrorStateAnalyzer {
         ts.isStringLiteral(node.moduleSpecifier)
       ) {
         const moduleName = node.moduleSpecifier.text;
+        const resolvedModuleName = this.resolveImportPath(moduleName);
 
         if (
           node.importClause?.namedBindings &&
           ts.isNamedImports(node.importClause.namedBindings)
         ) {
           node.importClause.namedBindings.elements.forEach((element) => {
-            this.imports.set(element.name.text, moduleName);
+            this.imports.set(element.name.text, resolvedModuleName);
           });
         }
 
         if (node.importClause?.name) {
-          this.imports.set(node.importClause.name.text, moduleName);
+          this.imports.set(node.importClause.name.text, resolvedModuleName);
         }
       }
     });
   }
 
   /**
-   * Analyze a useState hook call for potential error states
+   * Resolve import paths using project structure context
+   */
+  private resolveImportPath(importPath: string): string {
+    // Skip external packages
+    if (!importPath.startsWith(".") && !importPath.startsWith("/")) {
+      return importPath;
+    }
+
+    try {
+      const currentDir = path.dirname(this.sourceFile.fileName);
+      const projectStructure = this.config.getProjectStructure();
+
+      if (importPath.startsWith(".")) {
+        // Relative import
+        return path.resolve(currentDir, importPath);
+      } else {
+        // Absolute import from project root
+        const baseDir =
+          projectStructure?.detectedSourceDirectory || this.config.projectPath;
+        return path.resolve(baseDir, importPath.substring(1));
+      }
+    } catch (error) {
+      return importPath; // Fallback to original path
+    }
+  }
+
+  /**
+   * Analyze a useState hook call for potential error states with enhanced detection
    */
   public analyzeErrorState(
     node: ts.CallExpression,
@@ -131,7 +164,7 @@ export class ErrorStateAnalyzer {
   }
 
   /**
-   * Analyze React Context for error state patterns
+   * Analyze React Context for error state patterns with Next.js awareness
    */
   public analyzeContextErrorState(
     node: ts.CallExpression,
@@ -178,7 +211,7 @@ export class ErrorStateAnalyzer {
   }
 
   /**
-   * Analyze state management library patterns (Redux, Zustand, Jotai)
+   * Analyze state management library patterns with Next.js specific ones
    */
   public analyzeStateLibraryErrorState(
     node: ts.CallExpression,
@@ -211,13 +244,84 @@ export class ErrorStateAnalyzer {
       if (this.isSWRHook(node)) {
         this.analyzeSWRErrorState(node, errorStates);
       }
+
+      // Next.js specific state patterns
+      if (this.isNextJsStateHook(node)) {
+        this.analyzeNextJsErrorState(node, errorStates);
+      }
     } catch (error) {
       // Silently continue
     }
   }
 
   /**
-   * Find all error states in a component node
+   * Analyze Next.js specific state hooks
+   */
+  private isNextJsStateHook(node: ts.CallExpression): boolean {
+    const projectStructure = this.config.getProjectStructure();
+    if (projectStructure?.projectType !== "nextjs") {
+      return false;
+    }
+
+    const callText = node.expression.getText();
+    const nextjsHooks = [
+      "useRouter",
+      "useSearchParams",
+      "usePathname",
+      "useParams",
+      "useSelectedLayoutSegment",
+      "useSelectedLayoutSegments",
+    ];
+
+    return nextjsHooks.includes(callText);
+  }
+
+  /**
+   * Analyze Next.js specific error states
+   */
+  private analyzeNextJsErrorState(
+    node: ts.CallExpression,
+    errorStates: ErrorStatesMap
+  ): void {
+    const callText = node.expression.getText();
+
+    // useRouter error handling patterns
+    if (callText === "useRouter") {
+      const parent = node.parent;
+      if (
+        parent &&
+        ts.isVariableDeclaration(parent) &&
+        ts.isIdentifier(parent.name)
+      ) {
+        // Check for router error handling in the component
+        const routerVarName = parent.name.text;
+        traverseAST(this.sourceFile, (currentNode) => {
+          if (
+            ts.isCallExpression(currentNode) &&
+            ts.isPropertyAccessExpression(currentNode.expression) &&
+            ts.isIdentifier(currentNode.expression.expression) &&
+            currentNode.expression.expression.text === routerVarName
+          ) {
+            const methodName = currentNode.expression.name.text;
+            if (["push", "replace", "prefetch"].includes(methodName)) {
+              // Look for error handling around router calls
+              const location = ASTUtils.getNodeLocation(node, this.sourceFile);
+              if (location) {
+                errorStates.set(`${routerVarName}Error`, {
+                  setter: `set${this.capitalize(routerVarName)}Error`,
+                  location,
+                  initialValue: "nextjs-router",
+                });
+              }
+            }
+          }
+        });
+      }
+    }
+  }
+
+  /**
+   * Find all error states in a component node with enhanced detection
    */
   public findErrorStates(componentNode: ts.Node): ErrorStatesMap {
     const errorStates: ErrorStatesMap = new Map();
@@ -305,7 +409,7 @@ export class ErrorStateAnalyzer {
   }
 
   /**
-   * Enhanced scope determination with more patterns
+   * Enhanced scope determination with Next.js patterns
    */
   private determineAdvancedScope(
     node: ts.Node
@@ -320,10 +424,22 @@ export class ErrorStateAnalyzer {
       // Hook patterns
       if (ts.isCallExpression(current) && ts.isIdentifier(current.expression)) {
         const hookName = current.expression.text;
+
+        // Standard React hooks
         if (
           hookName.startsWith("use") &&
           (hookName.includes("Effect") || hookName === "useLayoutEffect")
         ) {
+          return "effect";
+        }
+
+        // Next.js specific hooks that might be in effects
+        const nextjsEffectHooks = [
+          "useRouter",
+          "useSearchParams",
+          "usePathname",
+        ];
+        if (nextjsEffectHooks.includes(hookName)) {
           return "effect";
         }
       }
@@ -331,6 +447,24 @@ export class ErrorStateAnalyzer {
       // Event handler patterns
       if (ASTUtils.isEventHandler(current)) {
         return "event";
+      }
+
+      // Next.js specific event patterns
+      if (
+        ts.isCallExpression(current) &&
+        ts.isPropertyAccessExpression(current.expression)
+      ) {
+        const propertyName = current.expression.name.text;
+        const nextjsEventMethods = [
+          "push",
+          "replace",
+          "back",
+          "forward",
+          "reload",
+        ];
+        if (nextjsEventMethods.includes(propertyName)) {
+          return "event";
+        }
       }
 
       // Callback patterns

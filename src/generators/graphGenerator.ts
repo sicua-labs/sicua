@@ -1,5 +1,5 @@
 import * as path from "path";
-import { ComponentRelation, ConfigManager } from "../types";
+import { ComponentRelation, IConfigManager } from "../types";
 import {
   ComponentNode,
   DependencyEdge,
@@ -113,7 +113,7 @@ function isReactComponent(
  */
 export function generateGraphData(
   components: ComponentRelation[],
-  config: ConfigManager
+  config: IConfigManager
 ): {
   getSigmaData: () => ComponentDependencyGraph;
   loadComponentDetails: (componentName: string) => void;

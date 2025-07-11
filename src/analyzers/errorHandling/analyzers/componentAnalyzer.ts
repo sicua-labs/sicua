@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { ErrorHandlingAnalysisResult } from "../../../types/errorHandling.types";
-import { ComponentRelation } from "../../../types";
+import { ComponentRelation, IConfigManager, ScanResult } from "../../../types";
 import { traverseAST } from "../../../utils/ast/traversal";
 import { NodeTypeGuards } from "../../../utils/ast/nodeTypeGuards";
 import { isReactComponent } from "../../../utils/ast/reactSpecific";
@@ -10,14 +10,18 @@ import { TryBlockAnalyzer } from "./tryBlockAnalyzer";
 import { FallbackElementAnalyzer } from "./fallbackElementAnalyzer";
 import { ErrorPatternAnalyzer } from "./errorPatternAnalyzer";
 import { FunctionAnalyzer } from "./functionAnalyzer";
+import * as path from "path";
+import { ConfigManager } from "../../../core/configManager";
 
 /**
- * Enhanced analyzer for error handling in React components
+ * Enhanced analyzer for error handling in React components with project structure awareness
  */
 export class ComponentAnalyzer {
   private component: ComponentRelation;
   private sourceFile: ts.SourceFile;
   private typeChecker: ts.TypeChecker;
+  private config: IConfigManager;
+  private scanResult: ScanResult;
   private errorBoundaryAnalyzer: ErrorBoundaryAnalyzer;
   private errorStateAnalyzer: ErrorStateAnalyzer;
   private tryBlockAnalyzer: TryBlockAnalyzer;
@@ -28,24 +32,69 @@ export class ComponentAnalyzer {
   constructor(
     component: ComponentRelation,
     sourceFile: ts.SourceFile,
-    typeChecker: ts.TypeChecker
+    typeChecker: ts.TypeChecker,
+    config?: IConfigManager,
+    scanResult?: ScanResult
   ) {
     this.component = component;
     this.sourceFile = sourceFile;
     this.typeChecker = typeChecker;
+    this.config = config || new ConfigManager(process.cwd());
+    this.scanResult = scanResult || this.createFallbackScanResult();
+
+    // Initialize analyzers with enhanced project context
     this.errorBoundaryAnalyzer = new ErrorBoundaryAnalyzer(
       sourceFile,
-      typeChecker
+      this.config
     );
-    this.errorStateAnalyzer = new ErrorStateAnalyzer(sourceFile);
-    this.tryBlockAnalyzer = new TryBlockAnalyzer(sourceFile);
-    this.fallbackElementAnalyzer = new FallbackElementAnalyzer(sourceFile);
-    this.errorPatternAnalyzer = new ErrorPatternAnalyzer(sourceFile);
-    this.functionAnalyzer = new FunctionAnalyzer(sourceFile, typeChecker);
+    this.errorStateAnalyzer = new ErrorStateAnalyzer(sourceFile, this.config);
+    this.tryBlockAnalyzer = new TryBlockAnalyzer(sourceFile, this.config);
+    this.fallbackElementAnalyzer = new FallbackElementAnalyzer(
+      sourceFile,
+      this.config
+    );
+    this.errorPatternAnalyzer = new ErrorPatternAnalyzer(
+      sourceFile,
+      this.config
+    );
+    this.functionAnalyzer = new FunctionAnalyzer(
+      sourceFile,
+      typeChecker,
+      this.config,
+      this.scanResult
+    );
   }
 
   /**
-   * Enhanced component analysis with comprehensive error handling detection
+   * Create fallback scan result if not provided
+   */
+  private createFallbackScanResult(): ScanResult {
+    return {
+      filePaths: [this.component.fullPath],
+      sourceFiles: new Map([[this.component.fullPath, this.sourceFile]]),
+      fileContents: new Map([
+        [this.component.fullPath, this.component.content || ""],
+      ]),
+      fileMetadata: new Map(),
+      securityFiles: [],
+      configFiles: [],
+      environmentFiles: [],
+      apiRoutes: [],
+      middlewareFiles: [],
+      packageInfo: [],
+      securityScanMetadata: {
+        scanTimestamp: Date.now(),
+        scanDuration: 0,
+        filesScanned: 1,
+        securityIssuesFound: 0,
+        riskLevel: "low",
+        coveragePercentage: 0,
+      },
+    };
+  }
+
+  /**
+   * Enhanced component analysis with comprehensive error handling detection and project structure awareness
    */
   public analyzeComponent(): ErrorHandlingAnalysisResult {
     const componentNodes = this.findAllComponentNodes();
@@ -61,24 +110,26 @@ export class ComponentAnalyzer {
       };
     }
 
-    // Combine analysis from all component nodes
+    // Combine analysis from all component nodes with enhanced context
     const combinedResults = this.combineComponentAnalysis(componentNodes);
 
     return combinedResults;
   }
 
   /**
-   * Find all component-related nodes in the source file
+   * Find all component-related nodes in the source file with Next.js awareness
    */
   private findAllComponentNodes(): ts.Node[] {
     const componentNodes: ts.Node[] = [];
+    const projectStructure = this.config.getProjectStructure();
 
     traverseAST(this.sourceFile, (node) => {
       // Function component declarations
       if (ts.isFunctionDeclaration(node)) {
         if (
           this.isTargetComponent(node, node.name?.text) &&
-          isReactComponent(node, this.typeChecker)
+          (isReactComponent(node, this.typeChecker) ||
+            this.isNextJsComponent(node, node.name?.text))
         ) {
           componentNodes.push(node);
         }
@@ -95,7 +146,10 @@ export class ComponentAnalyzer {
               ts.isArrowFunction(node.initializer) ||
               ts.isFunctionExpression(node.initializer)
             ) {
-              if (isReactComponent(node.initializer, this.typeChecker)) {
+              if (
+                isReactComponent(node.initializer, this.typeChecker) ||
+                this.isNextJsComponent(node.initializer, node.name.text)
+              ) {
                 componentNodes.push(node.initializer);
               }
             }
@@ -129,7 +183,10 @@ export class ComponentAnalyzer {
           ts.isArrowFunction(node.expression) ||
           ts.isFunctionExpression(node.expression)
         ) {
-          if (isReactComponent(node.expression, this.typeChecker)) {
+          if (
+            isReactComponent(node.expression, this.typeChecker) ||
+            this.isNextJsComponent(node.expression, this.component.name)
+          ) {
             componentNodes.push(node.expression);
           }
         }
@@ -172,7 +229,10 @@ export class ComponentAnalyzer {
             ts.isArrowFunction(forwardedComponent) ||
             ts.isFunctionExpression(forwardedComponent)
           ) {
-            if (isReactComponent(forwardedComponent, this.typeChecker)) {
+            if (
+              isReactComponent(forwardedComponent, this.typeChecker) ||
+              this.isNextJsComponent(forwardedComponent, this.component.name)
+            ) {
               componentNodes.push(forwardedComponent);
             }
           }
@@ -207,11 +267,22 @@ export class ComponentAnalyzer {
               }
             }
 
-            if (isReactComponent(actualComponent, this.typeChecker)) {
+            if (
+              isReactComponent(actualComponent, this.typeChecker) ||
+              this.isNextJsComponent(actualComponent, this.component.name)
+            ) {
               componentNodes.push(actualComponent);
             }
           }
         }
+      }
+
+      // Next.js App Router specific exports (page, layout, loading, error, etc.)
+      if (
+        projectStructure?.projectType === "nextjs" &&
+        projectStructure.routerType === "app"
+      ) {
+        this.findAppRouterExports(node, componentNodes);
       }
     });
 
@@ -219,7 +290,157 @@ export class ComponentAnalyzer {
   }
 
   /**
-   * Check if a node represents the target component
+   * Find Next.js App Router specific component exports
+   */
+  private findAppRouterExports(node: ts.Node, componentNodes: ts.Node[]): void {
+    const appRouterExports = [
+      "page",
+      "layout",
+      "loading",
+      "error",
+      "not-found",
+      "template",
+      "default",
+    ];
+
+    if (
+      ts.isExportDeclaration(node) &&
+      node.exportClause &&
+      ts.isNamedExports(node.exportClause)
+    ) {
+      node.exportClause.elements.forEach((element) => {
+        const exportName = element.name.text;
+        if (appRouterExports.includes(exportName.toLowerCase())) {
+          const componentDef = this.findComponentDefinition(exportName);
+          if (componentDef) {
+            componentNodes.push(componentDef);
+          }
+        }
+      });
+    }
+
+    // Default exports for app router files
+    if (ts.isExportAssignment(node) && node.isExportEquals === false) {
+      const fileName = path.basename(
+        this.component.fullPath,
+        path.extname(this.component.fullPath)
+      );
+      if (appRouterExports.includes(fileName.toLowerCase())) {
+        if (
+          ts.isArrowFunction(node.expression) ||
+          ts.isFunctionExpression(node.expression)
+        ) {
+          componentNodes.push(node.expression);
+        } else if (ts.isIdentifier(node.expression)) {
+          const componentDef = this.findComponentDefinition(
+            node.expression.text
+          );
+          if (componentDef) {
+            componentNodes.push(componentDef);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Check if a node represents a Next.js specific component
+   */
+  private isNextJsComponent(node: ts.Node, nodeName?: string): boolean {
+    const projectStructure = this.config.getProjectStructure();
+
+    if (projectStructure?.projectType !== "nextjs") {
+      return false;
+    }
+
+    const fileName = path.basename(
+      this.component.fullPath,
+      path.extname(this.component.fullPath)
+    );
+
+    // Next.js App Router components
+    if (projectStructure.routerType === "app") {
+      const appRouterFiles = [
+        "layout",
+        "page",
+        "loading",
+        "error",
+        "not-found",
+        "template",
+        "default",
+      ];
+      if (
+        appRouterFiles.includes(fileName.toLowerCase()) ||
+        (nodeName && appRouterFiles.includes(nodeName.toLowerCase()))
+      ) {
+        return true;
+      }
+    }
+
+    // Next.js Pages Router components
+    if (projectStructure.routerType === "pages") {
+      const pagesRouterFiles = ["_app", "_document", "_error", "404", "500"];
+      if (
+        pagesRouterFiles.includes(fileName) ||
+        (nodeName && pagesRouterFiles.includes(nodeName))
+      ) {
+        return true;
+      }
+    }
+
+    // Server components (in app directory)
+    if (
+      projectStructure.routerType === "app" &&
+      this.component.fullPath.includes("/app/")
+    ) {
+      // Check if it's likely a server component based on usage patterns
+      return this.hasServerComponentPatterns(node);
+    }
+
+    return false;
+  }
+
+  /**
+   * Check for server component patterns
+   */
+  private hasServerComponentPatterns(node: ts.Node): boolean {
+    let hasServerPatterns = false;
+
+    traverseAST(node, (currentNode) => {
+      // Check for async component
+      if (
+        (ts.isFunctionDeclaration(currentNode) ||
+          ts.isArrowFunction(currentNode) ||
+          ts.isFunctionExpression(currentNode)) &&
+        currentNode.modifiers?.some(
+          (mod) => mod.kind === ts.SyntaxKind.AsyncKeyword
+        )
+      ) {
+        hasServerPatterns = true;
+      }
+
+      // Check for server-side only imports or usage
+      if (
+        ts.isImportDeclaration(currentNode) &&
+        ts.isStringLiteral(currentNode.moduleSpecifier)
+      ) {
+        const importPath = currentNode.moduleSpecifier.text;
+        const serverOnlyPackages = ["fs", "path", "crypto", "os"];
+        if (
+          serverOnlyPackages.some(
+            (pkg) => importPath === pkg || importPath.startsWith(`${pkg}/`)
+          )
+        ) {
+          hasServerPatterns = true;
+        }
+      }
+    });
+
+    return hasServerPatterns;
+  }
+
+  /**
+   * Check if a node represents the target component with enhanced Next.js support
    */
   private isTargetComponent(
     node: ts.Node,
@@ -239,11 +460,50 @@ export class ComponentAnalyzer {
       this.component.name + "Component",
     ];
 
-    return variations.includes(nodeName);
+    if (variations.includes(nodeName)) {
+      return true;
+    }
+
+    // Next.js specific component name matching
+    const projectStructure = this.config.getProjectStructure();
+    if (projectStructure?.projectType === "nextjs") {
+      const fileName = path.basename(
+        this.component.fullPath,
+        path.extname(this.component.fullPath)
+      );
+
+      // For Next.js files, also match based on file name
+      if (
+        fileName === nodeName ||
+        fileName.toLowerCase() === nodeName.toLowerCase()
+      ) {
+        return true;
+      }
+
+      // App router specific matching
+      if (projectStructure.routerType === "app") {
+        const appRouterNames = [
+          "page",
+          "layout",
+          "loading",
+          "error",
+          "not-found",
+          "template",
+        ];
+        if (
+          appRouterNames.includes(fileName.toLowerCase()) &&
+          appRouterNames.includes(nodeName.toLowerCase())
+        ) {
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 
   /**
-   * Find component definition by name
+   * Find component definition by name with enhanced search
    */
   private findComponentDefinition(name: string): ts.Node | undefined {
     let componentDef: ts.Node | undefined;
@@ -275,7 +535,7 @@ export class ComponentAnalyzer {
   }
 
   /**
-   * Analyze Higher-Order Component patterns
+   * Analyze Higher-Order Component patterns with Next.js awareness
    */
   private analyzeHOCPattern(node: ts.CallExpression): ts.Node | undefined {
     const callText = node.expression.getText();
@@ -288,7 +548,17 @@ export class ComponentAnalyzer {
       /^observer$/, // MobX observer
     ];
 
-    if (hocPatterns.some((pattern) => pattern.test(callText))) {
+    // Next.js specific HOCs
+    const nextjsHocPatterns = [
+      /^withRouter$/, // Next.js withRouter
+      /^dynamic$/, // Next.js dynamic imports
+      /^getServerSideProps$/, // Pages router data fetching
+      /^getStaticProps$/, // Pages router static generation
+    ];
+
+    const allPatterns = [...hocPatterns, ...nextjsHocPatterns];
+
+    if (allPatterns.some((pattern) => pattern.test(callText))) {
       // Find the wrapped component
       const lastArg = node.arguments[node.arguments.length - 1];
       if (lastArg) {
@@ -306,7 +576,7 @@ export class ComponentAnalyzer {
   }
 
   /**
-   * Combine analysis results from multiple component nodes
+   * Combine analysis results from multiple component nodes with enhanced filtering
    */
   private combineComponentAnalysis(
     componentNodes: ts.Node[]
@@ -331,7 +601,7 @@ export class ComponentAnalyzer {
       });
     });
 
-    // Analyze each component node
+    // Analyze each component node with enhanced context
     componentNodes.forEach((componentNode) => {
       // Error boundaries
       const errorBoundaries =
@@ -374,7 +644,7 @@ export class ComponentAnalyzer {
   }
 
   /**
-   * Remove duplicates and filter results
+   * Remove duplicates and filter results with enhanced logic
    */
   private deduplicateAndFilterResults(
     result: ErrorHandlingAnalysisResult
@@ -448,7 +718,7 @@ export class ComponentAnalyzer {
   }
 
   /**
-   * Enhanced filtering for significant error handling with better heuristics
+   * Enhanced filtering for significant error handling with Next.js awareness
    */
   public getSignificantAnalysis(
     result: ErrorHandlingAnalysisResult
@@ -483,7 +753,7 @@ export class ComponentAnalyzer {
   }
 
   /**
-   * Enhanced significance check for error handling results
+   * Enhanced significance check for error handling results with Next.js considerations
    */
   private isEnhancedSignificantErrorHandling(
     result: ErrorHandlingAnalysisResult
@@ -500,6 +770,30 @@ export class ComponentAnalyzer {
     const hasSignificantFunctions = result.functionErrorHandling.some((f) =>
       this.isEnhancedSignificantFunction(f)
     );
+
+    // For Next.js components, be more lenient as error handling is crucial
+    const projectStructure = this.config.getProjectStructure();
+    if (projectStructure?.projectType === "nextjs") {
+      const fileName = path.basename(
+        this.component.fullPath,
+        path.extname(this.component.fullPath)
+      );
+      const isImportantNextJsFile = [
+        "layout",
+        "page",
+        "error",
+        "_app",
+        "_document",
+        "_error",
+      ].includes(fileName);
+
+      if (
+        isImportantNextJsFile &&
+        (hasErrorStates || hasSignificantFunctions)
+      ) {
+        return true;
+      }
+    }
 
     // Require at least 2 types of error handling or high-quality single type
     const significantTypes = [
@@ -520,7 +814,7 @@ export class ComponentAnalyzer {
   }
 
   /**
-   * Enhanced function significance check
+   * Enhanced function significance check with Next.js context
    */
   private isEnhancedSignificantFunction(func: any): boolean {
     const hasErrorHandling = func.hasErrorHandling;
@@ -541,6 +835,17 @@ export class ComponentAnalyzer {
     const riskIndicatorCount = Object.values(
       func.riskAnalysis.riskIndicators
     ).filter(Boolean).length;
+
+    // Lower threshold for Next.js server components and API routes
+    const projectStructure = this.config.getProjectStructure();
+    if (projectStructure?.projectType === "nextjs") {
+      if (
+        this.component.fullPath.includes("/api/") ||
+        this.component.fullPath.includes("/app/")
+      ) {
+        return riskIndicatorCount >= 2; // Lower threshold for server-side code
+      }
+    }
 
     return riskIndicatorCount >= 3;
   }

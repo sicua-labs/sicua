@@ -3,23 +3,27 @@ import { FallbackElement } from "../../../types/errorHandling.types";
 import { ASTUtils } from "../../../utils/ast/ASTUtils";
 import { ErrorPatternUtils } from "../../../utils/error_specific/errorPatternUtils";
 import { traverseAST } from "../../../utils/ast/traversal";
-import { NodeTypeGuards } from "../../../utils/ast/nodeTypeGuards";
 import { ErrorStatesMap } from "../types/internalTypes";
+import { IConfigManager } from "../../../types";
+import * as path from "path";
+import { ConfigManager } from "../../../core/configManager";
 
 /**
- * Enhanced analyzer for fallback UI elements in error handling
+ * Enhanced analyzer for fallback UI elements in error handling with project structure awareness
  */
 export class FallbackElementAnalyzer {
   private sourceFile: ts.SourceFile;
   private imports: Set<string> = new Set();
+  private config: IConfigManager;
 
-  constructor(sourceFile: ts.SourceFile) {
+  constructor(sourceFile: ts.SourceFile, config?: IConfigManager) {
     this.sourceFile = sourceFile;
+    this.config = config || new ConfigManager(process.cwd());
     this.analyzeImports();
   }
 
   /**
-   * Analyze import statements to understand available UI libraries
+   * Analyze import statements to understand available UI libraries with enhanced resolution
    */
   private analyzeImports(): void {
     traverseAST(this.sourceFile, (node) => {
@@ -27,13 +31,42 @@ export class FallbackElementAnalyzer {
         ts.isImportDeclaration(node) &&
         ts.isStringLiteral(node.moduleSpecifier)
       ) {
-        this.imports.add(node.moduleSpecifier.text);
+        const moduleName = node.moduleSpecifier.text;
+        const resolvedModuleName = this.resolveImportPath(moduleName);
+        this.imports.add(resolvedModuleName);
       }
     });
   }
 
   /**
-   * Find all fallback elements in a component node
+   * Resolve import paths using project structure context
+   */
+  private resolveImportPath(importPath: string): string {
+    // Skip external packages
+    if (!importPath.startsWith(".") && !importPath.startsWith("/")) {
+      return importPath;
+    }
+
+    try {
+      const currentDir = path.dirname(this.sourceFile.fileName);
+      const projectStructure = this.config.getProjectStructure();
+
+      if (importPath.startsWith(".")) {
+        // Relative import
+        return path.resolve(currentDir, importPath);
+      } else {
+        // Absolute import from project root
+        const baseDir =
+          projectStructure?.detectedSourceDirectory || this.config.projectPath;
+        return path.resolve(baseDir, importPath.substring(1));
+      }
+    } catch (error) {
+      return importPath; // Fallback to original path
+    }
+  }
+
+  /**
+   * Find all fallback elements in a component node with enhanced detection
    */
   public analyzeFallbackElements(
     node: ts.Node,
@@ -105,6 +138,16 @@ export class FallbackElementAnalyzer {
           );
           if (fallback) fallbacks.push(fallback);
         }
+
+        // Next.js specific fallback elements
+        if (this.isNextJsFallbackElement(currentNode)) {
+          const fallback = this.analyzeFallbackElement(
+            currentNode,
+            errorStates,
+            "nextjs"
+          );
+          if (fallback) fallbacks.push(fallback);
+        }
       }
 
       // Conditional rendering patterns
@@ -130,7 +173,81 @@ export class FallbackElementAnalyzer {
   }
 
   /**
-   * Analyze a specific fallback element
+   * Check if element is a Next.js specific fallback element
+   */
+  private isNextJsFallbackElement(
+    element: ts.JsxElement | ts.JsxSelfClosingElement
+  ): boolean {
+    const projectStructure = this.config.getProjectStructure();
+    if (projectStructure?.projectType !== "nextjs") {
+      return false;
+    }
+
+    const tagName = this.getTagName(element).toLowerCase();
+    const props = this.extractElementProps(element);
+
+    // Next.js App Router specific fallback components
+    if (projectStructure.routerType === "app") {
+      const appRouterFallbacks = [
+        "loading",
+        "error",
+        "not-found",
+        "global-error",
+      ];
+
+      if (appRouterFallbacks.includes(tagName)) {
+        return true;
+      }
+
+      // Check if we're in a special Next.js file
+      const fileName = path.basename(
+        this.sourceFile.fileName,
+        path.extname(this.sourceFile.fileName)
+      );
+      if (appRouterFallbacks.includes(fileName)) {
+        return true;
+      }
+    }
+
+    // Next.js Pages Router specific fallback components
+    if (projectStructure.routerType === "pages") {
+      const pagesRouterFallbacks = ["_error", "404", "500"];
+      const fileName = path.basename(
+        this.sourceFile.fileName,
+        path.extname(this.sourceFile.fileName)
+      );
+
+      if (pagesRouterFallbacks.includes(fileName)) {
+        return true;
+      }
+    }
+
+    // Next.js specific component patterns
+    const nextjsFallbackPatterns = [
+      /^(next|nextjs)(error|loading|fallback)$/i,
+      /^(error|loading|notfound)page$/i,
+    ];
+
+    if (nextjsFallbackPatterns.some((pattern) => pattern.test(tagName))) {
+      return true;
+    }
+
+    // Check for Next.js specific props
+    const nextjsFallbackProps = [
+      "statusCode",
+      "hasGetInitialProps",
+      "err",
+      "reset", // App Router error boundary prop
+      "retry", // Custom retry prop
+    ];
+
+    return nextjsFallbackProps.some((prop) =>
+      Object.keys(props).includes(prop)
+    );
+  }
+
+  /**
+   * Analyze a specific fallback element with enhanced context
    */
   private analyzeFallbackElement(
     element: ts.JsxElement | ts.JsxSelfClosingElement,
@@ -152,7 +269,7 @@ export class FallbackElementAnalyzer {
   }
 
   /**
-   * Check if element is an error fallback element
+   * Check if element is an error fallback element with enhanced patterns
    */
   private isErrorFallbackElement(
     element: ts.JsxElement | ts.JsxSelfClosingElement
@@ -175,6 +292,9 @@ export class FallbackElementAnalyzer {
 
       // Status patterns
       /^(status|state|condition)$/i,
+
+      // Modern UI patterns
+      /^(callout|admonition|notice)$/i,
     ];
 
     if (errorFallbackPatterns.some((pattern) => pattern.test(tagName))) {
@@ -193,6 +313,9 @@ export class FallbackElementAnalyzer {
       'severity="error"',
       'status="error"',
       'state="error"',
+      'intent="error"', // Modern design systems
+      'color="error"',
+      'colorScheme="red"',
     ];
 
     return errorPropPatterns.some((pattern) =>
@@ -204,7 +327,7 @@ export class FallbackElementAnalyzer {
   }
 
   /**
-   * Check if element is a loading fallback element
+   * Check if element is a loading fallback element with enhanced patterns
    */
   private isLoadingFallbackElement(
     element: ts.JsxElement | ts.JsxSelfClosingElement
@@ -215,7 +338,8 @@ export class FallbackElementAnalyzer {
     const loadingPatterns = [
       /^(loading|loader|spinner|skeleton|placeholder|shimmer)$/i,
       /^(circular|linear)progress$/i,
-      /^(pulse|wave|bars)$/i,
+      /^(pulse|wave|bars|dots)$/i,
+      /^(activity|refresh)indicator$/i,
     ];
 
     if (loadingPatterns.some((pattern) => pattern.test(tagName))) {
@@ -232,6 +356,8 @@ export class FallbackElementAnalyzer {
       'variant="loading"',
       'type="loading"',
       'state="loading"',
+      'status="pending"',
+      'intent="loading"',
     ];
 
     return loadingPropPatterns.some((pattern) =>
@@ -244,7 +370,7 @@ export class FallbackElementAnalyzer {
   }
 
   /**
-   * Check if element is an empty state fallback
+   * Check if element is an empty state fallback with enhanced patterns
    */
   private isEmptyStateFallbackElement(
     element: ts.JsxElement | ts.JsxSelfClosingElement
@@ -255,6 +381,7 @@ export class FallbackElementAnalyzer {
     const emptyStatePatterns = [
       /^(empty|emptystate|nodata|notfound|placeholder)$/i,
       /^(zero|null|void)state$/i,
+      /^(blank|missing)state$/i,
     ];
 
     if (emptyStatePatterns.some((pattern) => pattern.test(tagName))) {
@@ -271,6 +398,7 @@ export class FallbackElementAnalyzer {
       'variant="empty"',
       'type="empty"',
       'state="empty"',
+      'intent="empty"',
     ];
 
     return emptyPropPatterns.some((pattern) =>
@@ -282,7 +410,7 @@ export class FallbackElementAnalyzer {
   }
 
   /**
-   * Check if element is a retry mechanism
+   * Check if element is a retry mechanism with enhanced detection
    */
   private isRetryElement(
     element: ts.JsxElement | ts.JsxSelfClosingElement
@@ -305,11 +433,15 @@ export class FallbackElementAnalyzer {
       "onRefresh",
       "onClick",
       "onPress", // Generic handlers that might be retry
+      "reset", // Next.js App Router error boundary reset
     ];
 
     const hasRetryProps = retryPropPatterns.some((pattern) =>
       Object.keys(props).some(
-        (prop) => prop.includes("retry") || prop.includes("refresh")
+        (prop) =>
+          prop.includes("retry") ||
+          prop.includes("refresh") ||
+          prop.includes("reset")
       )
     );
 
@@ -323,7 +455,7 @@ export class FallbackElementAnalyzer {
   }
 
   /**
-   * Check if element is a Suspense fallback
+   * Check if element is a Suspense fallback with enhanced detection
    */
   private isSuspenseFallback(
     element: ts.JsxElement | ts.JsxSelfClosingElement
@@ -350,11 +482,41 @@ export class FallbackElementAnalyzer {
       }
     }
 
+    // Check for Next.js dynamic import fallbacks
+    const projectStructure = this.config.getProjectStructure();
+    if (projectStructure?.projectType === "nextjs") {
+      // Look for dynamic import patterns
+      traverseAST(this.sourceFile, (node) => {
+        if (
+          ts.isCallExpression(node) &&
+          ts.isIdentifier(node.expression) &&
+          node.expression.text === "dynamic"
+        ) {
+          // Check if this element is used as loading fallback
+          if (node.arguments.length > 1) {
+            const options = node.arguments[1];
+            if (ts.isObjectLiteralExpression(options)) {
+              options.properties.forEach((prop) => {
+                if (
+                  ts.isPropertyAssignment(prop) &&
+                  ts.isIdentifier(prop.name) &&
+                  prop.name.text === "loading"
+                ) {
+                  // This might be our fallback element
+                  return true;
+                }
+              });
+            }
+          }
+        }
+      });
+    }
+
     return false;
   }
 
   /**
-   * Check if element is a skeleton/placeholder
+   * Check if element is a skeleton/placeholder with enhanced patterns
    */
   private isSkeletonElement(
     element: ts.JsxElement | ts.JsxSelfClosingElement
@@ -365,13 +527,14 @@ export class FallbackElementAnalyzer {
       /^(skeleton|placeholder|shimmer|ghost)$/i,
       /^(card|text|image|avatar|button)skeleton$/i,
       /^(loading|placeholder)(card|text|image|avatar|button)$/i,
+      /^(content|ui)placeholder$/i,
     ];
 
     return skeletonPatterns.some((pattern) => pattern.test(tagName));
   }
 
   /**
-   * Analyze conditional expression for fallback patterns
+   * Analyze conditional expression for fallback patterns with enhanced logic
    */
   private analyzeConditionalFallback(
     node: ts.ConditionalExpression,
@@ -474,6 +637,22 @@ export class FallbackElementAnalyzer {
         return current as any; // Implicit error condition
       }
 
+      // Next.js specific patterns
+      if (ts.isCallExpression(current)) {
+        const callText = current.expression.getText();
+        const nextjsConditionalPatterns = [
+          /notFound\(/,
+          /redirect\(/,
+          /permanentRedirect\(/,
+        ];
+
+        if (
+          nextjsConditionalPatterns.some((pattern) => pattern.test(callText))
+        ) {
+          return current as any;
+        }
+      }
+
       current = current.parent;
     }
 
@@ -511,13 +690,27 @@ export class FallbackElementAnalyzer {
           relatedStates.push(fullPath);
         }
       }
+
+      // Next.js specific state patterns
+      if (ts.isCallExpression(node)) {
+        const callText = node.expression.getText();
+        const nextjsStatePatterns = [
+          /router\.(isReady|isFallback)/,
+          /searchParams\./,
+          /pathname/,
+        ];
+
+        if (nextjsStatePatterns.some((pattern) => pattern.test(callText))) {
+          relatedStates.push(callText);
+        }
+      }
     });
 
     return [...new Set(relatedStates)];
   }
 
   /**
-   * Check if expression represents fallback UI
+   * Check if expression represents fallback UI with enhanced detection
    */
   private isFallbackExpression(expr: ts.Expression): boolean {
     if (ts.isJsxElement(expr) || ts.isJsxSelfClosingElement(expr)) {
@@ -525,7 +718,8 @@ export class FallbackElementAnalyzer {
         this.isErrorFallbackElement(expr) ||
         this.isLoadingFallbackElement(expr) ||
         this.isEmptyStateFallbackElement(expr) ||
-        this.isSkeletonElement(expr)
+        this.isSkeletonElement(expr) ||
+        this.isNextJsFallbackElement(expr)
       );
     }
 
@@ -535,8 +729,22 @@ export class FallbackElementAnalyzer {
         text.includes("error") ||
         text.includes("loading") ||
         text.includes("failed") ||
-        text.includes("try again")
+        text.includes("try again") ||
+        text.includes("not found") ||
+        text.includes("something went wrong")
       );
+    }
+
+    // Check for function calls that return fallback UI
+    if (ts.isCallExpression(expr)) {
+      const callText = expr.expression.getText();
+      const fallbackFunctionPatterns = [
+        /render(Error|Loading|Empty|Fallback)/i,
+        /show(Error|Loading|Message)/i,
+        /display(Error|Fallback)/i,
+      ];
+
+      return fallbackFunctionPatterns.some((pattern) => pattern.test(callText));
     }
 
     return false;
@@ -574,7 +782,7 @@ export class FallbackElementAnalyzer {
   }
 
   /**
-   * Extract props from JSX element
+   * Extract props from JSX element with enhanced handling
    */
   private extractElementProps(
     element: ts.JsxElement | ts.JsxSelfClosingElement
@@ -610,7 +818,7 @@ export class FallbackElementAnalyzer {
   }
 
   /**
-   * Check if element has retry-related text content
+   * Check if element has retry-related text content with enhanced patterns
    */
   private hasRetryTextContent(
     element: ts.JsxElement | ts.JsxSelfClosingElement
@@ -624,7 +832,9 @@ export class FallbackElementAnalyzer {
           text.includes("retry") ||
           text.includes("try again") ||
           text.includes("refresh") ||
-          text.includes("reload")
+          text.includes("reload") ||
+          text.includes("reset") ||
+          text.includes("start over")
         ) {
           hasRetryText = true;
         }
@@ -636,7 +846,9 @@ export class FallbackElementAnalyzer {
           text.includes("retry") ||
           text.includes("try again") ||
           text.includes("refresh") ||
-          text.includes("reload")
+          text.includes("reload") ||
+          text.includes("reset") ||
+          text.includes("start over")
         ) {
           hasRetryText = true;
         }

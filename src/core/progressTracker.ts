@@ -109,7 +109,18 @@ export class ProgressTracker {
 
     const totalDuration = ((Date.now() - this.startTime) / 1000).toFixed(2);
     console.log(
-      pc.green(pc.bold(`✨ Analysis completed in ${totalDuration}s. Results saved to analysis-results.json`))
+      pc.green(
+        pc.bold(
+          `✨ Analysis completed in ${totalDuration}s. Results saved to analysis-results.json`
+        )
+      )
+    );
+    console.log(
+      pc.cyan(
+        `📤 You can now upload the JSON file to ${pc.bold(
+          "sicualabs.com"
+        )} for detailed insights and recommendations.`
+      )
     );
 
     this.isCompleted = true;

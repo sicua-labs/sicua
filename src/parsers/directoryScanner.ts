@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import ts from "typescript";
 import {
-  type ConfigManager,
+  type IConfigManager,
   FileCacheMetadata,
   SecurityFileInfo,
   ConfigFileInfo,
@@ -18,6 +18,259 @@ import {
   ScanResult,
   SecurityPattern,
 } from "../types";
+
+export interface ProjectStructureInfo {
+  projectType: "nextjs" | "react";
+  nextjsVersion?: string;
+  routerType?: "app" | "pages";
+  hasSourceDirectory: boolean;
+  sourceDirectory: string;
+  detectedDirectories: string[];
+}
+
+/**
+ * Detect project type and structure by analyzing package.json
+ */
+async function detectProjectStructure(
+  projectPath: string
+): Promise<ProjectStructureInfo> {
+  const packageJsonPath = path.join(projectPath, "package.json");
+
+  let projectInfo: ProjectStructureInfo = {
+    projectType: "react",
+    hasSourceDirectory: false,
+    sourceDirectory: projectPath,
+    detectedDirectories: [],
+  };
+
+  try {
+    const packageContent = fs.readFileSync(packageJsonPath, "utf-8");
+    const packageJson = JSON.parse(packageContent);
+
+    // Check for Next.js dependency
+    const dependencies = {
+      ...packageJson.dependencies,
+      ...packageJson.devDependencies,
+    };
+    const nextVersion = dependencies.next;
+
+    if (nextVersion) {
+      projectInfo.projectType = "nextjs";
+      projectInfo.nextjsVersion = nextVersion;
+
+      // Parse version to determine router type
+      const versionMatch = nextVersion.match(/(\d+)\.(\d+)/);
+      if (versionMatch) {
+        const major = parseInt(versionMatch[1]);
+        const minor = parseInt(versionMatch[2]);
+
+        // Next.js 13.4+ introduced stable app router
+        if (major > 13 || (major === 13 && minor >= 4)) {
+          projectInfo.routerType = "app";
+        } else {
+          projectInfo.routerType = "pages";
+        }
+      } else {
+        // Default to pages for unparseable versions
+        projectInfo.routerType = "pages";
+      }
+    }
+  } catch (error) {
+    console.warn("Could not read package.json, assuming React project");
+  }
+
+  // Detect actual directory structure
+  const possibleDirectories = [
+    "src",
+    "app",
+    "pages",
+    "components",
+    "lib",
+    "utils",
+  ];
+  const detectedDirs: string[] = [];
+
+  for (const dir of possibleDirectories) {
+    const dirPath = path.join(projectPath, dir);
+    try {
+      const stat = fs.statSync(dirPath);
+      if (stat.isDirectory()) {
+        detectedDirs.push(dir);
+      }
+    } catch {
+      // Directory doesn't exist, continue
+    }
+  }
+
+  projectInfo.detectedDirectories = detectedDirs;
+
+  // Determine source directory priority
+  if (detectedDirs.includes("src")) {
+    projectInfo.hasSourceDirectory = true;
+    projectInfo.sourceDirectory = path.join(projectPath, "src");
+  } else if (projectInfo.projectType === "nextjs") {
+    // For Next.js without src, use project root
+    projectInfo.sourceDirectory = projectPath;
+  } else {
+    // For React projects without src, look for common patterns
+    if (detectedDirs.includes("components")) {
+      projectInfo.sourceDirectory = projectPath;
+    } else {
+      projectInfo.sourceDirectory = projectPath;
+    }
+  }
+
+  return projectInfo;
+}
+
+/**
+ * Generate scanning patterns based on detected project structure
+ */
+function generateScanningPatterns(projectInfo: ProjectStructureInfo): {
+  rootConfigPatterns: string[];
+  sourcePatterns: string[];
+  securityPatterns: string[];
+} {
+  const rootConfigPatterns = [
+    "next.config.ts",
+    "next.config.js",
+    "next.config.mjs",
+    "tailwind.config.ts",
+    "tailwind.config.js",
+    "tailwind.config.mjs",
+    "package.json",
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.production",
+    "tsconfig.json",
+    "eslint.config.ts",
+    "eslint.config.js",
+    ".eslintrc.js",
+    ".eslintrc.json",
+    "middleware.ts",
+    "middleware.js",
+    "instrumentation.ts",
+    "instrumentation.js",
+  ];
+
+  let sourcePatterns: string[] = [];
+  let securityPatterns: string[] = [];
+
+  if (projectInfo.projectType === "nextjs") {
+    if (projectInfo.hasSourceDirectory) {
+      // Next.js with src directory
+      sourcePatterns = [
+        "src/**/*.{ts,tsx,js,jsx}",
+        "src/app/**/*.{ts,tsx,js,jsx}",
+        "src/pages/**/*.{ts,tsx,js,jsx}",
+        "src/components/**/*.{ts,tsx,js,jsx}",
+        "src/lib/**/*.{ts,tsx,js,jsx}",
+        "src/utils/**/*.{ts,tsx,js,jsx}",
+        "src/hooks/**/*.{ts,tsx,js,jsx}",
+        "src/context/**/*.{ts,tsx,js,jsx}",
+        "src/store/**/*.{ts,tsx,js,jsx}",
+      ];
+
+      securityPatterns = [
+        "src/app/**/api/**/*.{ts,js}",
+        "src/pages/api/**/*.{ts,js}",
+        "src/app/**/auth/**/*.{ts,tsx,js,jsx}",
+        "src/auth/**/*.{ts,tsx,js,jsx}",
+        "src/config/**/*.{ts,js}",
+        "src/security/**/*.{ts,tsx,js,jsx}",
+        "src/**/*auth*.{ts,tsx,js,jsx}",
+        "src/**/*middleware*.{ts,js}",
+        "src/**/*config*.{ts,js}",
+      ];
+    } else {
+      // Next.js without src directory
+      if (projectInfo.routerType === "app") {
+        sourcePatterns = [
+          "app/**/*.{ts,tsx,js,jsx}",
+          "components/**/*.{ts,tsx,js,jsx}",
+          "lib/**/*.{ts,tsx,js,jsx}",
+          "utils/**/*.{ts,tsx,js,jsx}",
+          "hooks/**/*.{ts,tsx,js,jsx}",
+          "context/**/*.{ts,tsx,js,jsx}",
+          "store/**/*.{ts,tsx,js,jsx}",
+          "types/**/*.{ts,tsx,js,jsx}",
+        ];
+
+        securityPatterns = [
+          "app/**/api/**/*.{ts,js}",
+          "app/**/auth/**/*.{ts,tsx,js,jsx}",
+          "auth/**/*.{ts,tsx,js,jsx}",
+          "config/**/*.{ts,js}",
+          "security/**/*.{ts,tsx,js,jsx}",
+          "**/*auth*.{ts,tsx,js,jsx}",
+          "**/*middleware*.{ts,js}",
+          "**/*config*.{ts,js}",
+        ];
+      } else {
+        // Pages router
+        sourcePatterns = [
+          "pages/**/*.{ts,tsx,js,jsx}",
+          "components/**/*.{ts,tsx,js,jsx}",
+          "lib/**/*.{ts,tsx,js,jsx}",
+          "utils/**/*.{ts,tsx,js,jsx}",
+          "hooks/**/*.{ts,tsx,js,jsx}",
+          "context/**/*.{ts,tsx,js,jsx}",
+          "store/**/*.{ts,tsx,js,jsx}",
+          "types/**/*.{ts,tsx,js,jsx}",
+        ];
+
+        securityPatterns = [
+          "pages/api/**/*.{ts,js}",
+          "pages/**/auth/**/*.{ts,tsx,js,jsx}",
+          "auth/**/*.{ts,tsx,js,jsx}",
+          "config/**/*.{ts,js}",
+          "security/**/*.{ts,tsx,js,jsx}",
+          "**/*auth*.{ts,tsx,js,jsx}",
+          "**/*middleware*.{ts,js}",
+          "**/*config*.{ts,js}",
+        ];
+      }
+    }
+  } else {
+    // Regular React project
+    if (projectInfo.hasSourceDirectory) {
+      sourcePatterns = [
+        "src/**/*.{ts,tsx,js,jsx}",
+        "src/components/**/*.{ts,tsx,js,jsx}",
+        "src/pages/**/*.{ts,tsx,js,jsx}",
+        "src/views/**/*.{ts,tsx,js,jsx}",
+        "src/lib/**/*.{ts,tsx,js,jsx}",
+        "src/utils/**/*.{ts,tsx,js,jsx}",
+        "src/hooks/**/*.{ts,tsx,js,jsx}",
+        "src/context/**/*.{ts,tsx,js,jsx}",
+        "src/store/**/*.{ts,tsx,js,jsx}",
+      ];
+    } else {
+      sourcePatterns = [
+        "components/**/*.{ts,tsx,js,jsx}",
+        "pages/**/*.{ts,tsx,js,jsx}",
+        "views/**/*.{ts,tsx,js,jsx}",
+        "lib/**/*.{ts,tsx,js,jsx}",
+        "utils/**/*.{ts,tsx,js,jsx}",
+        "hooks/**/*.{ts,tsx,js,jsx}",
+        "context/**/*.{ts,tsx,js,jsx}",
+        "store/**/*.{ts,tsx,js,jsx}",
+        "**/*.{ts,tsx,js,jsx}",
+      ];
+    }
+
+    securityPatterns = [
+      "**/auth/**/*.{ts,tsx,js,jsx}",
+      "**/config/**/*.{ts,js}",
+      "**/security/**/*.{ts,tsx,js,jsx}",
+      "**/*auth*.{ts,tsx,js,jsx}",
+      "**/*config*.{ts,js}",
+    ];
+  }
+
+  return { rootConfigPatterns, sourcePatterns, securityPatterns };
+}
 
 /**
  * Process file metadata with security analysis
@@ -381,116 +634,56 @@ function countComponents(content: string): number {
 }
 
 /**
- * Main directory scan with complete security analysis
+ * Main directory scan with complete security analysis and dynamic project structure detection
  */
 export async function scanDirectory(
   dir: string,
-  config: ConfigManager
+  config: IConfigManager
 ): Promise<ScanResult> {
   const scanStartTime = Date.now();
 
-  // FIXED: Ensure root-level files are captured with explicit patterns
-  const rootConfigPatterns = [
-    "next.config.ts",
-    "next.config.js",
-    "next.config.mjs",
-    "tailwind.config.ts",
-    "tailwind.config.js",
-    "tailwind.config.mjs",
-    "package.json",
-    ".env",
-    ".env.local",
-    ".env.development",
-    ".env.production",
-    "tsconfig.json",
-    "eslint.config.ts",
-    "eslint.config.js",
-    ".eslintrc.js",
-    ".eslintrc.json",
-    "middleware.ts",
-    "middleware.js",
-    "instrumentation.ts",
-    "instrumentation.js",
-  ];
+  // Detect project structure first
+  const projectInfo = await detectProjectStructure(dir);
 
-  // Source file patterns
-  const sourcePatterns = config.fileExtensions?.map((ext) => `**/*${ext}`) || [
-    "**/*.{ts,tsx,js,jsx}",
-  ];
+  // Generate scanning patterns based on project structure
+  const { rootConfigPatterns, sourcePatterns, securityPatterns } =
+    generateScanningPatterns(projectInfo);
 
-  // Deep source patterns for modern Next.js structure
-  const deepSourcePatterns = [
-    "src/**/*.{ts,tsx,js,jsx}",
-    "app/**/*.{ts,tsx,js,jsx}",
-    "pages/**/*.{ts,tsx,js,jsx}",
-    "components/**/*.{ts,tsx,js,jsx}",
-    "hooks/**/*.{ts,tsx,js,jsx}",
-    "lib/**/*.{ts,tsx,js,jsx}",
-    "utils/**/*.{ts,tsx,js,jsx}",
-    "context/**/*.{ts,tsx,js,jsx}",
-    "contexts/**/*.{ts,tsx,js,jsx}",
-    "store/**/*.{ts,tsx,js,jsx}",
-    "styles/**/*.{ts,tsx,js,jsx,css,scss}",
-    "constants/**/*.{ts,tsx,js,jsx}",
-    "types/**/*.{ts,tsx,js,jsx}",
-    "schemas/**/*.{ts,tsx,js,jsx}",
-  ];
-
-  // Security-relevant patterns
-  const securityPatterns = [
-    "**/api/**/*.{ts,js}",
-    "**/auth/**/*.{ts,tsx,js,jsx}",
-    "**/config/**/*.{ts,js}",
-    "**/security/**/*.{ts,tsx,js,jsx}",
-    "**/*auth*.{ts,tsx,js,jsx}",
-    "**/*middleware*.{ts,js}",
-    "**/*config*.{ts,js}",
-  ];
-
-  // FIXED: Run root patterns separately to ensure they're found
-  console.log(`📁 Scanning for root config files in: ${dir}`);
-
+  // Scan for root config files
   const rootFiles = await fg(rootConfigPatterns, {
     cwd: dir,
     absolute: true,
     onlyFiles: true,
-    dot: true, // Include .env files
+    dot: true,
     followSymbolicLinks: false,
   });
 
-  console.log(
-    `🔧 Root scan found: ${rootFiles.map((f) => path.basename(f)).join(", ")}`
-  );
-
-  // Scan for source and other files
-  const sourceFiles = await fg(
-    [...sourcePatterns, ...deepSourcePatterns, ...securityPatterns],
-    {
-      cwd: dir,
-      absolute: true,
-      ignore: [
-        "**/node_modules/**",
-        "**/dist/**",
-        "**/.git/**",
-        "**/build/**",
-        "**/.next/**",
-        "**/coverage/**",
-        "**/.nyc_output/**",
-        "**/out/**",
-      ],
-      followSymbolicLinks: false,
-      concurrency: 6,
-      onlyFiles: true,
-    }
-  );
+  // Scan for source and security files
+  const sourceFiles = await fg([...sourcePatterns, ...securityPatterns], {
+    cwd: dir,
+    absolute: true,
+    ignore: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/.git/**",
+      "**/build/**",
+      "**/.next/**",
+      "**/coverage/**",
+      "**/.nyc_output/**",
+      "**/out/**",
+    ],
+    followSymbolicLinks: false,
+    concurrency: 6,
+    onlyFiles: true,
+  });
 
   // Combine and deduplicate
   const allFiles = [...new Set([...rootFiles, ...sourceFiles])];
 
-  console.log(`📁 Total files found: ${allFiles.length}`);
-  console.log(
-    `🔧 Root config files: ${rootFiles.map((f) => path.basename(f)).join(", ")}`
-  );
+  // Update config with detected source directory
+  if (config.srcDir !== projectInfo.sourceDirectory) {
+    config.srcDir = projectInfo.sourceDirectory;
+  }
 
   // Perform complete scan
   const scanResult = await performFullScan(allFiles, dir);
@@ -519,7 +712,7 @@ async function performFullScan(
   const middlewareFiles: MiddlewareInfo[] = [];
   const packageInfo: PackageInfo[] = [];
 
-  // ADDITION: Separate parseable and config files
+  // Separate parseable and config files
   const parseableExtensions = [".ts", ".tsx", ".js", ".jsx"];
   const parseableFiles = filePaths.filter((filePath) => {
     const ext = path.extname(filePath).toLowerCase();
@@ -533,7 +726,7 @@ async function performFullScan(
 
   const batchSize = 50;
 
-  // MODIFICATION: Only process parseable files for AST/content parsing
+  // Process parseable files for AST/content parsing
   for (let i = 0; i < parseableFiles.length; i += batchSize) {
     const batch = parseableFiles.slice(i, i + batchSize);
 
@@ -611,7 +804,7 @@ async function performFullScan(
     );
   }
 
-  // ADDITION: Process config files separately (no AST parsing)
+  // Process config files separately (no AST parsing)
   for (const filePath of configOnlyFiles) {
     try {
       const content = fs.readFileSync(filePath, "utf-8");
@@ -636,7 +829,7 @@ async function performFullScan(
     }
   }
 
-  // Analyze package.json for security information (keep existing logic)
+  // Analyze package.json for security information
   try {
     const packageJsonPath = path.join(projectDir, "package.json");
     if (fs.existsSync(packageJsonPath)) {
@@ -649,7 +842,7 @@ async function performFullScan(
   }
 
   return {
-    filePaths: parseableFiles, // CHANGE: Only return parseable files for downstream processing
+    filePaths: parseableFiles, // Only return parseable files for downstream processing
     sourceFiles,
     fileContents,
     fileMetadata,
@@ -1000,7 +1193,7 @@ function categorizePackage(packageName: string): PackageSecurityCategory {
  */
 export async function getFilePaths(
   dir: string,
-  config: ConfigManager
+  config: IConfigManager
 ): Promise<string[]> {
   const scanResult = await scanDirectory(dir, config);
   return scanResult.filePaths;

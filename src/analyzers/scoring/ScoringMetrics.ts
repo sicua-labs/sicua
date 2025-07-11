@@ -405,8 +405,7 @@ export function calculatePerformanceScore(
 }
 
 /**
- * Calculate SEO problems score - ENHANCED
- * Much more aggressive scoring for SEO issues
+ * Enhanced SEO scoring that doesn't penalize simple pages
  */
 export function calculateSEOScore(context: MetricCalculationContext): number {
   if (!context.seoAnalysis) return 0;
@@ -415,89 +414,58 @@ export function calculateSEOScore(context: MetricCalculationContext): number {
   const componentName = context.component.name;
   const componentPath = context.component.fullPath;
 
-  // Enhanced page detection - check if this is a page component
+  // Check if this is a page component
   const isPage =
     componentPath.includes("/pages/") ||
     componentPath.includes("/app/") ||
     componentPath.includes("page.") ||
     componentName.toLowerCase().includes("page");
 
-  if (isPage) {
-    // Critical penalties for pages missing SEO essentials
-    const pageMetaTags = context.seoAnalysis.metaTags.pages[componentPath];
-    if (pageMetaTags) {
-      // Missing title is critical
-      if (!pageMetaTags.title.present) score += 40;
-
-      // Missing description is critical
-      if (!pageMetaTags.description.present) score += 40;
-
-      // Poor title length
-      if (
-        pageMetaTags.title.present &&
-        (pageMetaTags.title.length > 60 || pageMetaTags.title.length < 30)
-      ) {
-        score += 20;
-      }
-
-      // Poor description length
-      if (
-        pageMetaTags.description.present &&
-        (pageMetaTags.description.length > 160 ||
-          pageMetaTags.description.length < 120)
-      ) {
-        score += 20;
-      }
-
-      // Missing Open Graph
-      if (!pageMetaTags.openGraph.present) score += 25;
-
-      // Missing viewport responsiveness
-      if (!pageMetaTags.viewport.isResponsive) score += 15;
-
-      // Missing canonical URL
-      if (!pageMetaTags.canonical.present) score += 15;
-    } else {
-      // No meta tag analysis available for this page - critical
-      score += 80;
+  // For simple pages that just render a client component (like StrMapPage), don't penalize
+  if (isPage && context.component.content) {
+    const content = context.component.content;
+    const lineCount = content.split('\n').length;
+    
+    // If it's a simple page (< 50 lines) with proper metadata, don't penalize
+    if (lineCount < 50 && content.includes('generateMetadata')) {
+      return 0; // Simple pages with metadata are good
     }
   }
 
-  // Check for heading hierarchy issues (affects all components)
+  if (isPage) {
+    const pageMetaTags = context.seoAnalysis.metaTags.pages[componentPath];
+    if (pageMetaTags) {
+      // Only penalize missing critical SEO for complex pages
+      if (!pageMetaTags.title.present) score += 30; // Reduced penalty
+      if (!pageMetaTags.description.present) score += 30; // Reduced penalty
+
+      // Don't penalize length issues as heavily
+      if (
+        pageMetaTags.title.present &&
+        (pageMetaTags.title.length > 70 || pageMetaTags.title.length < 20)
+      ) {
+        score += 10; // Reduced penalty
+      }
+
+      if (
+        pageMetaTags.description.present &&
+        (pageMetaTags.description.length > 180 ||
+          pageMetaTags.description.length < 100)
+      ) {
+        score += 10; // Reduced penalty
+      }
+
+      // Missing Open Graph - less critical
+      if (!pageMetaTags.openGraph.present) score += 15; // Reduced penalty
+    }
+  }
+
+  // Reduce other SEO penalties
   const headingIssues =
     context.seoAnalysis.semanticStructure.headingHierarchy.hierarchyIssues.filter(
       (issue) => issue.path === componentPath
     );
-  score += headingIssues.length * 20; // Increased penalty
-
-  // Check image optimization issues
-  const imageIssues = context.seoAnalysis.imageOptimization.images.filter(
-    (img) => img.usedInPages.includes(componentPath) && img.issues.length > 0
-  );
-
-  // Higher penalties for SEO-critical image issues
-  for (const image of imageIssues) {
-    const criticalIssues = image.issues.filter(
-      (issue) =>
-        issue.type === "missing-alt" || issue.type === "missing-dimensions"
-    );
-    score += criticalIssues.length * 8; // Increased penalty
-  }
-
-  // Check for structured data issues
-  if (context.seoAnalysis.contentStructure?.structuredData) {
-    const schemas =
-      context.seoAnalysis.contentStructure.structuredData.schemas.filter(
-        (schema) => schema.location === componentPath
-      );
-
-    for (const schema of schemas) {
-      if (schema.coverage < 50) {
-        // Less than 50% of required fields
-        score += 15;
-      }
-    }
-  }
+  score += headingIssues.length * 8; // Reduced penalty
 
   return Math.min(Math.round(score), 100);
 }
@@ -692,6 +660,129 @@ export function calculateComponentFlowScore(
 
       break;
     }
+  }
+
+  return Math.min(Math.round(score), 100);
+}
+
+/**
+ * NEW: Calculate React-specific complexity patterns that make components problematic
+ */
+export function calculateReactComplexityScore(
+  context: MetricCalculationContext
+): number {
+  if (!context.component.content) return 0;
+
+  const content = context.component.content;
+  let score = 0;
+
+  // Multiple useEffect hooks (like ReportCreationContainer)
+  const useEffectMatches = content.match(/useEffect\s*\(/g);
+  const useEffectCount = useEffectMatches ? useEffectMatches.length : 0;
+  if (useEffectCount > 3) {
+    score += (useEffectCount - 3) * 15; // Heavy penalty for many useEffects
+  }
+
+  // Multiple useState hooks indicating complex state management
+  const useStateMatches = content.match(/useState\s*[<(]/g);
+  const useStateCount = useStateMatches ? useStateMatches.length : 0;
+  if (useStateCount > 5) {
+    score += (useStateCount - 5) * 8; // Penalty for complex state
+  }
+
+  // Complex conditional rendering (nested ternary, multiple conditions)
+  const ternaryMatches = content.match(/\?\s*[^:]*:/g);
+  const ternaryCount = ternaryMatches ? ternaryMatches.length : 0;
+  if (ternaryCount > 3) {
+    score += (ternaryCount - 3) * 10;
+  }
+
+  // Nested JSX expressions indicating complex rendering logic
+  const jsxExpressionMatches = content.match(/{\s*[^}]*{[^}]*}[^}]*}/g);
+  const nestedJsxCount = jsxExpressionMatches ? jsxExpressionMatches.length : 0;
+  if (nestedJsxCount > 2) {
+    score += nestedJsxCount * 8;
+  }
+
+  // Long functions/components (lines of code)
+  const lineCount = content.split('\n').length;
+  if (lineCount > 150) {
+    score += (lineCount - 150) * 0.3; // Penalty for very long components
+  }
+
+  // Multiple async operations without proper error handling
+  const asyncMatches = content.match(/async\s+/g);
+  const awaitMatches = content.match(/await\s+/g);
+  const asyncCount = asyncMatches ? asyncMatches.length : 0;
+  const awaitCount = awaitMatches ? awaitMatches.length : 0;
+  const tryMatches = content.match(/try\s*{/g);
+  const tryCount = tryMatches ? tryMatches.length : 0;
+
+  if ((asyncCount > 2 || awaitCount > 3) && tryCount === 0) {
+    score += 25; // Heavy penalty for async operations without error handling
+  }
+
+  // Store/context coupling (multiple store imports like ReportCreationContainer)
+  const storeMatches = content.match(/use\w*Store\s*\(/g);
+  const storeCount = storeMatches ? storeMatches.length : 0;
+  if (storeCount > 3) {
+    score += (storeCount - 3) * 12; // Penalty for high store coupling
+  }
+
+  return Math.min(Math.round(score), 100);
+}
+
+/**
+ * NEW: Calculate container component penalty
+ * Container components should be simple - if they're complex, they're problematic
+ */
+export function calculateContainerComplexityScore(
+  context: MetricCalculationContext
+): number {
+  if (!context.component.content) return 0;
+
+  const content = context.component.content;
+  const componentName = context.component.name;
+
+  // Identify if this is likely a container component
+  const containerPatterns = [
+    /Container$/,
+    /Provider$/,
+    /Wrapper$/,
+    /Manager$/,
+    /Controller$/,
+  ];
+
+  const isContainer = containerPatterns.some(pattern => 
+    pattern.test(componentName)
+  ) || context.component.fullPath.includes('container');
+
+  if (!isContainer) return 0;
+
+  let score = 0;
+
+  // Containers should delegate, not implement complex logic
+  const implementationPatterns = [
+    /useEffect\s*\(/g,
+    /useState\s*[<(]/g,
+    /async\s+/g,
+    /setInterval\s*\(/g,
+    /setTimeout\s*\(/g,
+    /fetch\s*\(/g,
+    /axios\./g,
+  ];
+
+  implementationPatterns.forEach(pattern => {
+    const matches = content.match(pattern);
+    if (matches && matches.length > 2) {
+      score += matches.length * 8; // Heavy penalty for implementation in containers
+    }
+  });
+
+  // Containers with complex JSX are doing too much
+  const jsxComplexity = (content.match(/<\w/g) || []).length;
+  if (jsxComplexity > 10) {
+    score += (jsxComplexity - 10) * 2;
   }
 
   return Math.min(Math.round(score), 100);

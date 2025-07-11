@@ -1,11 +1,17 @@
 /**
  * Utility functions for analyzing JSX structure from ComponentRelation data
  * Enhanced with better text extraction and accessibility analysis helpers
+ * Updated to work with enhanced ScanResult and ProcessedContent
  */
 
 import * as ts from "typescript";
 import { JSXElementInfo, JSXPropValue } from "../types/accessibilityTypes";
-import { ComponentRelation, JSXStructure } from "../../../types";
+import {
+  ComponentRelation,
+  JSXStructure,
+  ScanResult,
+  ProcessedContent,
+} from "../../../types";
 import { ASTUtils } from "../../../utils/ast/ASTUtils";
 import { traverseAST } from "../../../utils/ast/traversal";
 import {
@@ -24,8 +30,12 @@ import {
 export class JSXAnalysisUtils {
   /**
    * Extracts JSX elements from component content for accessibility analysis
+   * Updated to work with enhanced ScanResult and ProcessedContent
    */
-  static extractJSXElements(component: ComponentRelation): JSXElementInfo[] {
+  static extractJSXElements(
+    component: ComponentRelation,
+    scanResult: ScanResult
+  ): JSXElementInfo[] {
     const elements: JSXElementInfo[] = [];
 
     // First try to use existing jsxStructure if available
@@ -35,13 +45,37 @@ export class JSXAnalysisUtils {
       );
     }
 
-    // Also parse from raw content to catch any missed elements
-    if (component.content) {
-      const contentElements = this.parseJSXFromContent(component.content);
+    // Get enhanced content from ScanResult
+    const enhancedContent = this.getEnhancedContent(component, scanResult);
+    if (enhancedContent) {
+      const contentElements = this.parseJSXFromContent(enhancedContent);
       elements.push(...contentElements);
     }
 
+    // Fallback to original content if available
+    if (component.content && elements.length === 0) {
+      const fallbackElements = this.parseJSXFromContent(component.content);
+      elements.push(...fallbackElements);
+    }
+
     return this.deduplicateElements(elements);
+  }
+
+  /**
+   * Gets enhanced content from ScanResult fileContents map
+   */
+  private static getEnhancedContent(
+    component: ComponentRelation,
+    scanResult: ScanResult
+  ): string | null {
+    // Try to get content from ScanResult first (this is the most up-to-date)
+    const scanContent = scanResult.fileContents.get(component.fullPath);
+    if (scanContent) {
+      return scanContent;
+    }
+
+    // Fallback to component content if not in scan result
+    return component.content || null;
   }
 
   /**
@@ -76,6 +110,7 @@ export class JSXAnalysisUtils {
 
   /**
    * Parses JSX elements directly from component content string
+   * Enhanced to handle TypeScript and modern JSX patterns
    */
   private static parseJSXFromContent(content: string): JSXElementInfo[] {
     const elements: JSXElementInfo[] = [];
@@ -101,6 +136,7 @@ export class JSXAnalysisUtils {
       });
     } catch (error) {
       // Silently handle parsing errors - some content may not be valid JSX
+      // This is expected for files that might contain partial JSX or complex patterns
     }
 
     return elements;
@@ -108,6 +144,7 @@ export class JSXAnalysisUtils {
 
   /**
    * Converts TypeScript JSX node to JSXElementInfo
+   * Enhanced with better error handling and context extraction
    */
   private static convertTSNodeToElementInfo(
     node: ts.JsxElement | ts.JsxSelfClosingElement,
@@ -156,6 +193,7 @@ export class JSXAnalysisUtils {
 
   /**
    * Extracts tag name from JSX node
+   * Fixed to handle TypeScript type narrowing properly
    */
   private static getJSXTagName(
     node: ts.JsxElement | ts.JsxSelfClosingElement
@@ -166,8 +204,15 @@ export class JSXAnalysisUtils {
     if (ts.isIdentifier(tagNameNode)) {
       return tagNameNode.text;
     } else if (ts.isPropertyAccessExpression(tagNameNode)) {
-      // Handle cases like React.Fragment or styled.div
-      return tagNameNode.getText();
+      // Handle cases like React.Fragment, styled.div, or motion.div
+      const objectName = ts.isIdentifier(tagNameNode.expression)
+        ? tagNameNode.expression.text
+        : tagNameNode.expression.getText();
+      const propertyName = tagNameNode.name.text;
+      return `${objectName}.${propertyName}`;
+    } else if (ts.isJsxNamespacedName(tagNameNode)) {
+      // Handle namespace cases like svg:circle
+      return `${tagNameNode.namespace.text}:${tagNameNode.name.text}`;
     }
 
     return "unknown";
@@ -175,6 +220,7 @@ export class JSXAnalysisUtils {
 
   /**
    * Extracts props from JSX node
+   * Enhanced with better prop value extraction
    */
   private static extractPropsFromNode(
     node: ts.JsxElement | ts.JsxSelfClosingElement
@@ -188,6 +234,14 @@ export class JSXAnalysisUtils {
           const propName = this.getAttributeName(attr.name);
           const propValue = this.extractPropValue(attr);
           props[propName] = propValue;
+        } else if (ts.isJsxSpreadAttribute(attr)) {
+          // Handle spread attributes like {...props}
+          const spreadExpression = attr.expression.getText();
+          props[`...${spreadExpression}`] = {
+            type: "expression",
+            value: undefined,
+            rawValue: `{...${spreadExpression}}`,
+          };
         }
       });
     }
@@ -210,6 +264,7 @@ export class JSXAnalysisUtils {
 
   /**
    * Extracts value from JSX attribute
+   * Enhanced with better expression handling
    */
   private static extractPropValue(attr: ts.JsxAttribute): JSXPropValue {
     if (!attr.initializer) {
@@ -258,6 +313,22 @@ export class JSXAnalysisUtils {
         };
       }
 
+      if (expr.kind === ts.SyntaxKind.NullKeyword) {
+        return {
+          type: "undefined",
+          value: undefined,
+          rawValue: "null",
+        };
+      }
+
+      if (expr.kind === ts.SyntaxKind.UndefinedKeyword) {
+        return {
+          type: "undefined",
+          value: undefined,
+          rawValue: "undefined",
+        };
+      }
+
       // For complex expressions, store the raw text
       return {
         type: "expression",
@@ -274,6 +345,7 @@ export class JSXAnalysisUtils {
 
   /**
    * Extracts text content from JSX children
+   * Enhanced to handle more text patterns
    */
   private static extractTextFromJSXChildren(
     children: ts.NodeArray<ts.JsxChild>
@@ -290,6 +362,12 @@ export class JSXAnalysisUtils {
         // Try to extract static text from expressions
         if (ts.isStringLiteral(child.expression)) {
           textParts.push(child.expression.text);
+        } else if (ts.isTemplateExpression(child.expression)) {
+          // Handle template literals
+          const templateText = child.expression.head.text;
+          if (templateText.trim()) {
+            textParts.push(templateText);
+          }
         }
       }
     });
@@ -299,15 +377,22 @@ export class JSXAnalysisUtils {
 
   /**
    * Gets surrounding context for better error reporting
+   * Enhanced with better context boundaries
    */
   private static getNodeContext(
     node: ts.Node,
     sourceFile: ts.SourceFile
   ): string {
     try {
-      const start = Math.max(0, node.getStart(sourceFile) - 50);
-      const end = Math.min(sourceFile.getFullText().length, node.getEnd() + 50);
-      return sourceFile.getFullText().substring(start, end);
+      const start = Math.max(0, node.getStart(sourceFile) - 100);
+      const end = Math.min(
+        sourceFile.getFullText().length,
+        node.getEnd() + 100
+      );
+      const context = sourceFile.getFullText().substring(start, end);
+
+      // Clean up context to remove excessive whitespace
+      return context.replace(/\s+/g, " ").trim();
     } catch (error) {
       return "";
     }
@@ -333,7 +418,8 @@ export class JSXAnalysisUtils {
     if (
       typeStr === "string" ||
       typeStr.startsWith('"') ||
-      typeStr.startsWith("'")
+      typeStr.startsWith("'") ||
+      typeStr.startsWith("`")
     ) {
       return "string";
     }
@@ -343,7 +429,7 @@ export class JSXAnalysisUtils {
     if (typeStr === "boolean" || typeStr === "true" || typeStr === "false") {
       return "boolean";
     }
-    if (typeStr === "undefined") {
+    if (typeStr === "undefined" || typeStr === "null") {
       return "undefined";
     }
     return "expression";
@@ -355,6 +441,9 @@ export class JSXAnalysisUtils {
   private static parsePropValue(typeStr: string): JSXPropValue["value"] {
     if (typeStr.startsWith('"') || typeStr.startsWith("'")) {
       return typeStr.slice(1, -1); // Remove quotes
+    }
+    if (typeStr.startsWith("`") && typeStr.endsWith("`")) {
+      return typeStr.slice(1, -1); // Remove backticks for template literals
     }
     if (!isNaN(Number(typeStr))) {
       return Number(typeStr);
@@ -369,16 +458,24 @@ export class JSXAnalysisUtils {
   }
 
   /**
-   * Removes duplicate elements based on tag name and props
+   * Removes duplicate elements based on tag name, props, and content
+   * Enhanced deduplication logic
    */
   private static deduplicateElements(
     elements: JSXElementInfo[]
   ): JSXElementInfo[] {
     const seen = new Set<string>();
     return elements.filter((element) => {
-      const key = `${element.tagName}-${JSON.stringify(element.props)}-${
+      // Create a more comprehensive key for deduplication
+      const propsKey = Object.entries(element.props)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, value]) => `${key}:${value.type}:${value.value}`)
+        .join(";");
+
+      const key = `${element.tagName}-${propsKey}-${
         element.textContent || ""
-      }`;
+      }-${element.location?.line || 0}`;
+
       if (seen.has(key)) {
         return false;
       }

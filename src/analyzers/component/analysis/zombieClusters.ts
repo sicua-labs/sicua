@@ -1,9 +1,9 @@
 import { ComponentRelation } from "../../../types";
+import { ComponentLookupService } from "../../../core/componentLookupService";
 import {
   GraphTraversalContext,
   ClusterContext,
 } from "../types/component.types";
-import { normalizeImportPath } from "../utils/graphUtils";
 import {
   IDiagramData,
   INode,
@@ -14,15 +14,17 @@ import {
   ZombieClusterAnalysisResult,
 } from "../../../types/zombieCluster.types";
 import { generateComponentId } from "../../../utils/common/analysisUtils";
-import { generateGridLayout, generateEdgeId } from "../utils/graphUtils";
+import { generateEdgeId } from "../utils/graphUtils";
 
 /**
- * Detects zombie component clusters - components that are not reachable from entry points
+ * Detects zombie component clusters using optimized lookups
  * @param components The list of components to analyze
+ * @param lookupService Pre-initialized lookup service for O(1) component resolution
  * @returns Complete zombie cluster analysis result
  */
 export function detectZombieComponentClusters(
-  components: ComponentRelation[]
+  components: ComponentRelation[],
+  lookupService: ComponentLookupService
 ): ZombieClusterAnalysisResult {
   const context: GraphTraversalContext = {
     graph: {},
@@ -34,15 +36,8 @@ export function detectZombieComponentClusters(
     visited: new Set<string>(),
   };
 
-  // Create component map for efficient lookup
-  const componentMap = new Map<string, ComponentRelation>();
-  components.forEach((comp) => {
-    const componentId = generateComponentId(comp);
-    componentMap.set(componentId, comp);
-  });
-
-  // Build the graph and collect nodes
-  buildGraphAndCollectNodes(components, context, componentMap);
+  // Build the graph and collect nodes using optimized operations
+  buildGraphAndCollectNodes(components, context, lookupService);
 
   // Find entry points - nodes with no incoming edges
   const entryPoints = findEntryPoints(context);
@@ -62,7 +57,7 @@ export function detectZombieComponentClusters(
   processZombieClusters(
     unvisited,
     context,
-    componentMap,
+    lookupService,
     clusters,
     currentY,
     clusterSpacing
@@ -100,40 +95,34 @@ export function detectZombieComponentClusters(
 }
 
 /**
- * Builds the component and function graph and collects all nodes
+ * Builds the component and function graph using optimized lookups
  */
 function buildGraphAndCollectNodes(
   components: ComponentRelation[],
   context: GraphTraversalContext,
-  componentMap: Map<string, ComponentRelation>
+  lookupService: ComponentLookupService
 ): void {
-  components.forEach((component) => {
+  for (const component of components) {
     const componentId = generateComponentId(component);
     context.allNodes.add(componentId);
 
-    // Map imports to unique component IDs
+    // Resolve imports to component IDs using O(1) lookups
     context.graph[componentId] = component.imports
-      .map((imp) => normalizeImportPath(imp, components))
-      .map((normalizedImport) => {
-        // Find target component by normalized import path
-        const targetComponent = components.find(
-          (c) => c.name === normalizedImport
-        );
-        return targetComponent ? generateComponentId(targetComponent) : null;
-      })
-      .filter((targetId): targetId is string => targetId !== null);
+      .flatMap((imp) => lookupService.resolveImportToComponentIds(imp))
+      .filter((targetId) => targetId !== componentId); // Exclude self-references
 
+    // Process functions if available
     if (Array.isArray(component.functions) && component.functionCalls) {
-      component.functions.forEach((func) => {
+      for (const func of component.functions) {
         const fullName = `${componentId}.${func}`;
         context.allNodes.add(fullName);
         context.functionToComponent[fullName] = componentId;
-        context.graph[fullName] = (component.functionCalls?.[func] || []).map(
+        context.graph[fullName] = (component.functionCalls[func] || []).map(
           (callee) => `${componentId}.${callee}`
         );
-      });
+      }
     }
-  });
+  }
 }
 
 /**
@@ -141,38 +130,47 @@ function buildGraphAndCollectNodes(
  */
 function findEntryPoints(context: GraphTraversalContext): Set<string> {
   const entryPoints = new Set(context.allNodes);
-  Object.values(context.graph).forEach((imports) => {
-    imports.forEach((imp) => entryPoints.delete(imp));
-  });
+
+  // Remove nodes that have incoming edges
+  for (const targets of Object.values(context.graph)) {
+    for (const target of targets) {
+      entryPoints.delete(target);
+    }
+  }
+
   return entryPoints;
 }
 
 /**
- * Marks reachable nodes from entry points via DFS
+ * Marks reachable nodes from entry points via optimized DFS
  */
 function markReachableNodes(
   entryPoints: Set<string>,
   context: GraphTraversalContext
 ): void {
-  function dfs(node: string) {
-    context.visited.add(node);
-    (context.graph[node] || []).forEach((neighbor) => {
-      if (!context.visited.has(neighbor)) {
-        dfs(neighbor);
-      }
-    });
-  }
+  const dfs = (node: string): void => {
+    if (context.visited.has(node)) return;
 
-  Array.from(entryPoints).forEach(dfs);
+    context.visited.add(node);
+    const neighbors = context.graph[node] || [];
+
+    for (const neighbor of neighbors) {
+      dfs(neighbor);
+    }
+  };
+
+  for (const entryPoint of entryPoints) {
+    dfs(entryPoint);
+  }
 }
 
 /**
- * Processes zombie clusters - groups of unreachable nodes
+ * Processes zombie clusters using optimized lookups
  */
 function processZombieClusters(
   unvisited: string[],
   context: GraphTraversalContext,
-  componentMap: Map<string, ComponentRelation>,
+  lookupService: ComponentLookupService,
   clusters: ZombieClusterInfo[],
   currentY: number,
   clusterSpacing: number
@@ -189,15 +187,15 @@ function processZombieClusters(
     const cluster = processCluster(
       clusterContext,
       context,
-      componentMap,
+      lookupService,
       currentY + clusterIndex * clusterSpacing
     );
 
-    // Convert component IDs back to readable names for display
+    // Convert component IDs back to readable names using O(1) lookups
     const readableComponentNames = cluster.components
       .filter((nodeId) => !nodeId.includes(".")) // Only component nodes, not functions
       .map((componentId) => {
-        const component = componentMap.get(componentId);
+        const component = lookupService.getComponentById(componentId);
         return component?.name || componentId;
       });
 
@@ -223,25 +221,12 @@ function processZombieClusters(
 }
 
 /**
- * Get a suggestion based on the cluster size
- */
-function getSuggestionForCluster(size: number): string {
-  if (size > 5) {
-    return "Consider refactoring this large zombie cluster into smaller, reusable modules with clear entry points.";
-  } else if (size > 2) {
-    return "These components should either be connected to the main application or removed if unused.";
-  }
-  return "This small zombie cluster may be unused code that can be safely removed.";
-}
-
-/**
- * Processes a single zombie cluster
- * @returns Information about the processed cluster
+ * Processes a single zombie cluster using optimized lookups
  */
 function processCluster(
   clusterContext: ClusterContext,
   context: GraphTraversalContext,
-  componentMap: Map<string, ComponentRelation>,
+  lookupService: ComponentLookupService,
   yPosition: number
 ): {
   components: string[];
@@ -268,6 +253,7 @@ function processCluster(
 
   context.nodes.push(clusterNode);
 
+  // BFS to find all connected nodes in cluster
   while (queue.length > 0) {
     const node = queue.shift()!;
 
@@ -279,7 +265,7 @@ function processCluster(
           node,
           clusterContext.clusterId,
           context,
-          componentMap,
+          lookupService,
           functions,
           yPosition,
           processedComponents
@@ -287,21 +273,23 @@ function processCluster(
         context.processedNodes.add(node);
       }
 
-      (context.graph[node] || []).forEach((neighbor) => {
+      // Add neighbors to queue
+      const neighbors = context.graph[node] || [];
+      for (const neighbor of neighbors) {
         if (!cluster.includes(neighbor)) {
           queue.push(neighbor);
         }
-      });
+      }
     }
   }
 
   // Remove processed nodes from unvisited
-  cluster.forEach((node) => {
+  for (const node of cluster) {
     const index = clusterContext.unvisited.indexOf(node);
     if (index > -1) {
       clusterContext.unvisited.splice(index, 1);
     }
-  });
+  }
 
   return {
     components: cluster.filter((node) => !node.includes(".")),
@@ -310,13 +298,13 @@ function processCluster(
 }
 
 /**
- * Processes a single node in a zombie cluster
+ * Processes a single node in a zombie cluster using O(1) lookups
  */
 function processNode(
   node: string,
   clusterId: string,
   context: GraphTraversalContext,
-  componentMap: Map<string, ComponentRelation>,
+  lookupService: ComponentLookupService,
   functionsMap: { [componentName: string]: string[] },
   clusterY: number,
   processedComponents: Set<string>
@@ -326,8 +314,8 @@ function processNode(
   if (isFunction) {
     const [componentId, funcName] = node.split(".");
 
-    // Find component data using unique ID
-    const componentData = componentMap.get(componentId);
+    // Get component data using O(1) lookup
+    const componentData = lookupService.getComponentById(componentId);
     const directory = componentData?.directory || "";
 
     // Ensure parent component node exists first
@@ -370,7 +358,7 @@ function processNode(
 
     const functionNode: INode = {
       id: node,
-      position: { x: 200, y: clusterY + 100 }, // Position relative to component
+      position: { x: 200, y: clusterY + 100 },
       data: functionNodeData,
       parentNode: componentId,
       extent: "parent",
@@ -396,9 +384,9 @@ function processNode(
     }
     functionsMap[componentName].push(funcName);
   } else {
-    const componentData = componentMap.get(node);
+    // Handle component node using O(1) lookup
+    const componentData = lookupService.getComponentById(node);
 
-    // Add component node with unique ID but readable label
     const nodeData: INodeData = {
       label: componentData?.name || node,
       fullPath: componentData?.fullPath || node,
@@ -408,7 +396,7 @@ function processNode(
 
     const componentNode: INode = {
       id: node,
-      position: { x: 150, y: clusterY + 50 }, // Position relative to cluster
+      position: { x: 150, y: clusterY + 50 },
       data: nodeData,
       parentNode: clusterId,
       extent: "parent",
@@ -427,4 +415,16 @@ function processNode(
     context.edges.push(edge);
     processedComponents.add(node);
   }
+}
+
+/**
+ * Get a suggestion based on the cluster size
+ */
+function getSuggestionForCluster(size: number): string {
+  if (size > 5) {
+    return "Consider refactoring this large zombie cluster into smaller, reusable modules with clear entry points.";
+  } else if (size > 2) {
+    return "These components should either be connected to the main application or removed if unused.";
+  }
+  return "This small zombie cluster may be unused code that can be safely removed.";
 }

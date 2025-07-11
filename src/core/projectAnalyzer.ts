@@ -40,6 +40,8 @@ import { GeneralAnalyzer } from "../analyzers/general/GeneralAnalyzer";
 import { ComponentScoringAnalyzer } from "../analyzers/scoring/ComponentScoringAnalyzer";
 import { AccessibilityAnalyzer } from "../analyzers/accessibility/AccessibilityAnalyzer";
 import path from "path";
+import { ComponentLookupService } from "./componentLookupService";
+import { PathResolver } from "../parsers/pathResolver";
 
 export class ProjectAnalyzer {
   private config: ConfigManager;
@@ -54,7 +56,8 @@ export class ProjectAnalyzer {
     this.contentProcessor = new ContentProcessor();
     this.progressTracker = new ProgressTracker([
       "Loading configuration",
-      "🔍 Scanning project directory...",
+      "🔍 Detecting project structure...",
+      "📁 Scanning project directory...",
       "📝 Parsing component files...",
       "📊 Analyzing general metrics...",
       "🔗 Analyzing component dependencies...",
@@ -81,72 +84,57 @@ export class ProjectAnalyzer {
 
   async analyze(): Promise<void> {
     try {
+      // Load configuration with dynamic project structure detection
       await this.config.loadConfig();
       this.progressTracker.start();
       this.progressTracker.incrementProgress(); // Loading configuration
 
-      // Perform unified scanning of the project
+      // Validate configuration and show warnings if any
+      const warnings = this.config.validateConfig();
+      if (warnings.length > 0) {
+        console.warn("⚠️  Configuration warnings:");
+        warnings.forEach((warning) => console.warn(`   ${warning}`));
+      }
+
+      this.progressTracker.incrementProgress(); // Detecting project structure
+
+      // Perform unified scanning of the project with enhanced structure detection
       this.scanResult = await scanDirectory(
         this.config.projectPath,
         this.config
       );
       this.progressTracker.incrementProgress(); // Scanning project directory
 
-      // Initialize TypeScript program and type checker
+      // Initialize TypeScript program and type checker with dynamic paths
       this.initializeTypeScriptProgram();
 
-      const parseableScanResult: ScanResult = {
-        ...this.scanResult,
-        filePaths: this.scanResult.filePaths.filter((filePath) => {
-          const ext = path.extname(filePath).toLowerCase();
-          const parseableExtensions = [".ts", ".tsx", ".js", ".jsx"];
-          return parseableExtensions.includes(ext);
-        }),
-        // Also filter the sourceFiles and fileContents maps
-        sourceFiles: new Map(
-          Array.from(this.scanResult.sourceFiles.entries()).filter(
-            ([filePath]) => {
-              const ext = path.extname(filePath).toLowerCase();
-              const parseableExtensions = [".ts", ".tsx", ".js", ".jsx"];
-              return parseableExtensions.includes(ext);
-            }
-          )
-        ),
-        fileContents: new Map(
-          Array.from(this.scanResult.fileContents.entries()).filter(
-            ([filePath]) => {
-              const ext = path.extname(filePath).toLowerCase();
-              const parseableExtensions = [".ts", ".tsx", ".js", ".jsx"];
-              return parseableExtensions.includes(ext);
-            }
-          )
-        ),
-        fileMetadata: new Map(
-          Array.from(this.scanResult.fileMetadata.entries()).filter(
-            ([filePath]) => {
-              const ext = path.extname(filePath).toLowerCase();
-              const parseableExtensions = [".ts", ".tsx", ".js", ".jsx"];
-              return parseableExtensions.includes(ext);
-            }
-          )
-        ),
-      };
+      // Filter parseable files but keep all for security analysis
+      const parseableScanResult: ScanResult = this.createParseableScanResult();
 
-      // Parse components using the scan result
+      // Parse components using the enhanced scan result
       const components: ComponentRelation[] = await parseFiles(
-        this.scanResult,
+        parseableScanResult,
         this.config.srcDir,
         this.config
       );
       this.progressTracker.incrementProgress(); // Parsing component files
+
+      // Initialize optimized services once for all analyzers
+      const componentLookupService = new ComponentLookupService(components);
+      const pathResolver = new PathResolver(this.config, this.scanResult!);
 
       // General Analysis
       const generalAnalyzer = new GeneralAnalyzer(this.scanResult!);
       const generalAnalysis = await generalAnalyzer.analyze();
       this.progressTracker.incrementProgress(); // Analyzing general metrics
 
-      // Dependency analysis
-      const componentAnalyzer = new ComponentAnalyzer(components, this.config);
+      // Dependency analysis with optimized services
+      const componentAnalyzer = new ComponentAnalyzer(
+        components,
+        this.config,
+        componentLookupService,
+        pathResolver
+      );
       const advancedAnalysis = await componentAnalyzer.analyze();
       this.progressTracker.incrementProgress(); // Analyzing component dependencies
 
@@ -161,7 +149,12 @@ export class ProjectAnalyzer {
       this.progressTracker.incrementProgress(); // Analyzing TypeScript types
 
       // Complexity analysis
-      const complexityAnalyzer = new ComplexityAnalyzer(components);
+      const complexityAnalyzer = new ComplexityAnalyzer(
+        components,
+        componentLookupService,
+        pathResolver,
+        this.scanResult
+      );
       const complexityAnalysis = await complexityAnalyzer.analyze();
       this.progressTracker.incrementProgress(); // Calculating complexity metrics
 
@@ -172,7 +165,7 @@ export class ProjectAnalyzer {
       );
       this.progressTracker.incrementProgress(); // Generating component dependency graph
 
-      // Graph generation for file structure
+      // Graph generation for file structure with enhanced metadata
       const structureGraphGenerator = generateStructureGraphData(
         this.scanResult!,
         this.config
@@ -185,7 +178,7 @@ export class ProjectAnalyzer {
       );
 
       // Deduplication analysis
-      const analyzer = new DeduplicationAnalyzer(components);
+      const analyzer = new DeduplicationAnalyzer(components, this.scanResult);
       const similarities = await analyzer.analyzeComponents(components);
 
       // Filter significant matches
@@ -217,20 +210,26 @@ export class ProjectAnalyzer {
       const translationAnalysis = await translationAnalyzer.analyze();
       this.progressTracker.incrementProgress(); // Analyzing translation coverage
 
-      // Component flow analysis
+      // Component flow analysis with enhanced path handling
       const componentFlowAnalyzer = new ComponentFlowAnalyzer(
         this.config.projectPath,
         this.config.srcDir,
-        components
+        components,
+        componentLookupService,
+        pathResolver,
+        this.scanResult
       );
       const componentFlowAnalysis = await componentFlowAnalyzer.analyze();
       this.progressTracker.incrementProgress(); // Analyzing component flow patterns
 
-      const accessibilityAnalyzer = new AccessibilityAnalyzer(components);
+      const accessibilityAnalyzer = new AccessibilityAnalyzer(
+        this.scanResult,
+        components
+      );
       const accessibilityAnalysis = await accessibilityAnalyzer.analyze();
       this.progressTracker.incrementProgress(); // Analyzing accessibility compliance
 
-      // Security analysis
+      // Security analysis with comprehensive scan result
       const securityAnalyzer = new SecurityAnalyzer();
       const securityAnalysis = await securityAnalyzer.analyze(this.scanResult, {
         projectPath: this.config.projectPath,
@@ -258,18 +257,6 @@ export class ProjectAnalyzer {
           20 // Top 20 components
         );
       this.progressTracker.incrementProgress(); // Calculating component scores
-
-      // Process components and build final result
-      const processedComponents: ProcessedComponentRelation[] = components.map(
-        (component) => {
-          if (!component.content) return { ...component, content: undefined };
-          const processed = this.contentProcessor.processComponent(component);
-          return {
-            ...component,
-            content: JSON.parse(processed.content!) as ProcessedContent,
-          };
-        }
-      );
 
       // Build the final analysis result
       const analysisResult: AnalysisResult = {
@@ -299,43 +286,163 @@ export class ProjectAnalyzer {
 
       this.progressTracker.complete();
 
-      console.log("\n✅ Analysis Complete!");
-      console.log(`📁 Analyzed ${this.scanResult.filePaths.length} files`);
-      console.log(`⚛️ Found ${components.length} components`);
-      console.log(
-        `🔒 Found ${securityAnalysis.vulnerabilities.length} security vulnerabilities`
-      );
-      console.log(`💾 Results saved to: ${this.config.outputFileName}`);
+      // Show any configuration warnings again at the end
+      if (warnings.length > 0) {
+        console.log(
+          `\n⚠️  ${warnings.length} configuration warning(s) - see above for details`
+        );
+      }
     } catch (error) {
-      console.error("An error occurred during analysis:", error);
+      console.error("\n❌ An error occurred during analysis:", error);
+
+      // Provide helpful error context
+      if (error instanceof Error) {
+        if (
+          error.message.includes("ENOENT") ||
+          error.message.includes("does not exist")
+        ) {
+          console.error(
+            "💡 This might be a path or file access issue. Please check:"
+          );
+          console.error("   - The project path exists and is accessible");
+          console.error("   - You have read permissions for the directory");
+          console.error("   - The detected source directory is correct");
+        }
+
+        if (error.message.includes("package.json")) {
+          console.error("💡 Package.json issue detected. Please ensure:");
+          console.error("   - package.json exists in the project root");
+          console.error("   - The file contains valid JSON");
+          console.error(
+            "   - You're running the analyzer from the correct directory"
+          );
+        }
+      }
+
       throw error;
     }
   }
 
   /**
-   * Initialize TypeScript program and type checker for static analysis
+   * Create a filtered scan result for parseable files while keeping security data intact
+   */
+  private createParseableScanResult(): ScanResult {
+    const parseableExtensions = [".ts", ".tsx", ".js", ".jsx"];
+
+    const parseableFiles = this.scanResult!.filePaths.filter((filePath) => {
+      const ext = path.extname(filePath).toLowerCase();
+      return parseableExtensions.includes(ext);
+    });
+
+    return {
+      ...this.scanResult!,
+      filePaths: parseableFiles,
+      // Filter the sourceFiles and fileContents maps to parseable files only
+      sourceFiles: new Map(
+        Array.from(this.scanResult!.sourceFiles.entries()).filter(
+          ([filePath]) => {
+            const ext = path.extname(filePath).toLowerCase();
+            return parseableExtensions.includes(ext);
+          }
+        )
+      ),
+      fileContents: new Map(
+        Array.from(this.scanResult!.fileContents.entries()).filter(
+          ([filePath]) => {
+            const ext = path.extname(filePath).toLowerCase();
+            return parseableExtensions.includes(ext);
+          }
+        )
+      ),
+      fileMetadata: new Map(
+        Array.from(this.scanResult!.fileMetadata.entries()).filter(
+          ([filePath]) => {
+            const ext = path.extname(filePath).toLowerCase();
+            return parseableExtensions.includes(ext);
+          }
+        )
+      ),
+    };
+  }
+
+  /**
+   * Initialize TypeScript program and type checker for static analysis with enhanced path handling
    */
   private initializeTypeScriptProgram(): void {
     if (!this.scanResult) {
       throw new Error("Scan result is not available");
     }
 
-    const compilerOptions: ts.CompilerOptions = {
-      target: ts.ScriptTarget.Latest,
-      module: ts.ModuleKind.ESNext,
-      jsx: ts.JsxEmit.React,
-      allowJs: true,
-      esModuleInterop: true,
-      skipLibCheck: true,
-      noEmit: true,
-      incremental: false,
-    };
+    try {
+      // Look for tsconfig.json in project root or source directory
+      const possibleTsConfigPaths = [
+        path.join(this.config.projectPath, "tsconfig.json"),
+        path.join(this.config.srcDir, "tsconfig.json"),
+      ];
 
-    // Create program with all source files
-    this.program = ts.createProgram(
-      Array.from(this.scanResult.sourceFiles.keys()),
-      compilerOptions
-    );
-    this.typeChecker = this.program.getTypeChecker();
+      let tsConfigPath: string | undefined;
+      let compilerOptions: ts.CompilerOptions = {
+        target: ts.ScriptTarget.Latest,
+        module: ts.ModuleKind.ESNext,
+        jsx: ts.JsxEmit.React,
+        allowJs: true,
+        esModuleInterop: true,
+        skipLibCheck: true,
+        noEmit: true,
+        incremental: false,
+      };
+
+      // Try to find and parse tsconfig.json
+      for (const configPath of possibleTsConfigPaths) {
+        try {
+          const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
+          if (!configFile.error) {
+            tsConfigPath = configPath;
+            const parsedConfig = ts.parseJsonConfigFileContent(
+              configFile.config,
+              ts.sys,
+              path.dirname(configPath)
+            );
+
+            if (!parsedConfig.errors.length) {
+              compilerOptions = { ...compilerOptions, ...parsedConfig.options };
+              break;
+            }
+          }
+        } catch (error) {
+          // Continue to next possible config path
+        }
+      }
+
+      if (!tsConfigPath) {
+        console.log(
+          "📄 No tsconfig.json found, using default TypeScript configuration"
+        );
+      }
+
+      // Create program with all source files
+      this.program = ts.createProgram(
+        Array.from(this.scanResult.sourceFiles.keys()),
+        compilerOptions
+      );
+      this.typeChecker = this.program.getTypeChecker();
+    } catch (error) {
+      console.warn("⚠️  Failed to initialize TypeScript program:", error);
+      console.log(
+        "🔧 Continuing with basic analysis (some type features may be limited)"
+      );
+
+      // Create a minimal program as fallback
+      this.program = ts.createProgram(
+        Array.from(this.scanResult.sourceFiles.keys()),
+        {
+          target: ts.ScriptTarget.Latest,
+          module: ts.ModuleKind.ESNext,
+          allowJs: true,
+          noEmit: true,
+        }
+      );
+      this.typeChecker = this.program.getTypeChecker();
+    }
   }
 }

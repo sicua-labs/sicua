@@ -2,25 +2,28 @@ import ts from "typescript";
 import { ErrorPattern } from "../../../types/errorHandling.types";
 import { ASTUtils } from "../../../utils/ast/ASTUtils";
 import { ErrorPatternUtils } from "../../../utils/error_specific/errorPatternUtils";
-import { RiskAnalysisUtils } from "../../../utils/error_specific/riskAnalysisUtils";
 import { traverseAST } from "../../../utils/ast/traversal";
-import { NodeTypeGuards } from "../../../utils/ast/nodeTypeGuards";
 import { ErrorStatesMap } from "../types/internalTypes";
+import { IConfigManager } from "../../../types";
+import * as path from "path";
+import { ConfigManager } from "../../../core/configManager";
 
 /**
- * Enhanced analyzer for error handling patterns in React components
+ * Enhanced analyzer for error handling patterns in React components with project structure awareness
  */
 export class ErrorPatternAnalyzer {
   private sourceFile: ts.SourceFile;
   private imports: Set<string> = new Set();
+  private config: IConfigManager;
 
-  constructor(sourceFile: ts.SourceFile) {
+  constructor(sourceFile: ts.SourceFile, config?: IConfigManager) {
     this.sourceFile = sourceFile;
+    this.config = config || new ConfigManager(process.cwd());
     this.analyzeImports();
   }
 
   /**
-   * Analyze import statements to understand available libraries
+   * Analyze import statements to understand available libraries with enhanced resolution
    */
   private analyzeImports(): void {
     traverseAST(this.sourceFile, (node) => {
@@ -28,13 +31,42 @@ export class ErrorPatternAnalyzer {
         ts.isImportDeclaration(node) &&
         ts.isStringLiteral(node.moduleSpecifier)
       ) {
-        this.imports.add(node.moduleSpecifier.text);
+        const moduleName = node.moduleSpecifier.text;
+        const resolvedModuleName = this.resolveImportPath(moduleName);
+        this.imports.add(resolvedModuleName);
       }
     });
   }
 
   /**
-   * Analyze a component node for error handling patterns
+   * Resolve import paths using project structure context
+   */
+  private resolveImportPath(importPath: string): string {
+    // Skip external packages
+    if (!importPath.startsWith(".") && !importPath.startsWith("/")) {
+      return importPath;
+    }
+
+    try {
+      const currentDir = path.dirname(this.sourceFile.fileName);
+      const projectStructure = this.config.getProjectStructure();
+
+      if (importPath.startsWith(".")) {
+        // Relative import
+        return path.resolve(currentDir, importPath);
+      } else {
+        // Absolute import from project root
+        const baseDir =
+          projectStructure?.detectedSourceDirectory || this.config.projectPath;
+        return path.resolve(baseDir, importPath.substring(1));
+      }
+    } catch (error) {
+      return importPath; // Fallback to original path
+    }
+  }
+
+  /**
+   * Analyze a component node for error handling patterns with project structure awareness
    */
   public analyzeErrorPatterns(
     node: ts.Node,
@@ -74,9 +106,116 @@ export class ErrorPatternAnalyzer {
       // Async operation patterns
       const asyncPattern = this.analyzeAsyncErrorPattern(currentNode);
       if (asyncPattern) patterns.push(asyncPattern);
+
+      // Next.js specific patterns
+      const nextjsPattern = this.analyzeNextJsErrorPattern(currentNode);
+      if (nextjsPattern) patterns.push(nextjsPattern);
     });
 
     return patterns;
+  }
+
+  /**
+   * Analyze Next.js specific error patterns
+   */
+  private analyzeNextJsErrorPattern(node: ts.Node): ErrorPattern | undefined {
+    const projectStructure = this.config.getProjectStructure();
+    if (projectStructure?.projectType !== "nextjs") {
+      return undefined;
+    }
+
+    if (ts.isCallExpression(node)) {
+      const callText = node.expression.getText();
+
+      // Next.js App Router patterns
+      if (projectStructure.routerType === "app") {
+        const appRouterPatterns = [
+          /notFound\(/,
+          /redirect\(/,
+          /permanentRedirect\(/,
+          /unstable_noStore\(/,
+          /revalidatePath\(/,
+          /revalidateTag\(/,
+        ];
+
+        if (appRouterPatterns.some((pattern) => pattern.test(callText))) {
+          const location = ASTUtils.getNodeLocation(node, this.sourceFile);
+          if (location) {
+            return {
+              type: "async-handling",
+              location,
+              relatedStates: [],
+              pattern: callText,
+            };
+          }
+        }
+      }
+
+      // Next.js Pages Router patterns
+      if (projectStructure.routerType === "pages") {
+        const pagesRouterPatterns = [
+          /getServerSideProps/,
+          /getStaticProps/,
+          /getStaticPaths/,
+          /getInitialProps/,
+        ];
+
+        if (pagesRouterPatterns.some((pattern) => pattern.test(callText))) {
+          const location = ASTUtils.getNodeLocation(node, this.sourceFile);
+          if (location) {
+            return {
+              type: "async-handling",
+              location,
+              relatedStates: [],
+              pattern: callText,
+            };
+          }
+        }
+      }
+
+      // Next.js Router patterns
+      const routerPatterns = [
+        /router\.(push|replace|back|forward|reload)/,
+        /useRouter\(/,
+        /useSearchParams\(/,
+        /usePathname\(/,
+        /useParams\(/,
+      ];
+
+      if (routerPatterns.some((pattern) => pattern.test(callText))) {
+        const location = ASTUtils.getNodeLocation(node, this.sourceFile);
+        if (location) {
+          return {
+            type: "async-handling",
+            location,
+            relatedStates: [],
+            pattern: callText,
+          };
+        }
+      }
+
+      // Next.js Image and optimization patterns
+      const optimizationPatterns = [
+        /next\/image/,
+        /next\/font/,
+        /next\/script/,
+        /next\/head/,
+      ];
+
+      if (optimizationPatterns.some((pattern) => pattern.test(callText))) {
+        const location = ASTUtils.getNodeLocation(node, this.sourceFile);
+        if (location) {
+          return {
+            type: "async-handling",
+            location,
+            relatedStates: [],
+            pattern: callText,
+          };
+        }
+      }
+    }
+
+    return undefined;
   }
 
   /**
@@ -129,7 +268,7 @@ export class ErrorPatternAnalyzer {
   }
 
   /**
-   * Analyze error logging patterns
+   * Analyze error logging patterns with enhanced detection
    */
   private analyzeErrorLoggingPattern(node: ts.Node): ErrorPattern | undefined {
     if (ts.isCallExpression(node)) {
@@ -151,6 +290,11 @@ export class ErrorPatternAnalyzer {
         /mixpanel\.track/,
         /gtag\(.*error/,
         /analytics\.track/,
+
+        // Next.js specific logging
+        /console\.error/,
+        /console\.warn/,
+        /unstable_noStore/,
       ];
 
       if (loggingPatterns.some((pattern) => pattern.test(callText))) {
@@ -170,7 +314,7 @@ export class ErrorPatternAnalyzer {
   }
 
   /**
-   * Analyze state update patterns
+   * Analyze state update patterns with enhanced detection
    */
   private analyzeStateUpdatePattern(node: ts.Node): ErrorPattern | undefined {
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
@@ -181,7 +325,8 @@ export class ErrorPatternAnalyzer {
         ErrorPatternUtils.isErrorStateSetter(callee) ||
         this.isReduxDispatchErrorAction(node) ||
         this.isZustandErrorUpdate(node) ||
-        this.isJotaiErrorUpdate(node)
+        this.isJotaiErrorUpdate(node) ||
+        this.isNextJsStateUpdate(node)
       ) {
         const location = ASTUtils.getNodeLocation(node, this.sourceFile);
         if (location) {
@@ -199,7 +344,39 @@ export class ErrorPatternAnalyzer {
   }
 
   /**
-   * Analyze browser API error patterns
+   * Check for Next.js specific state updates
+   */
+  private isNextJsStateUpdate(node: ts.CallExpression): boolean {
+    const projectStructure = this.config.getProjectStructure();
+    if (projectStructure?.projectType !== "nextjs") {
+      return false;
+    }
+
+    const callText = node.expression.getText();
+
+    // Router state updates
+    if (
+      callText.includes("router.") &&
+      ["push", "replace", "back", "forward", "reload"].some((method) =>
+        callText.includes(method)
+      )
+    ) {
+      return true;
+    }
+
+    // Search params updates
+    if (
+      callText.includes("searchParams") ||
+      callText.includes("setSearchParams")
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Analyze browser API error patterns with enhanced detection
    */
   private analyzeBrowserApiPattern(node: ts.Node): ErrorPattern | undefined {
     if (ts.isCallExpression(node)) {
@@ -250,7 +427,7 @@ export class ErrorPatternAnalyzer {
   }
 
   /**
-   * Analyze third-party library error patterns
+   * Analyze third-party library error patterns with Next.js awareness
    */
   private analyzeThirdPartyLibraryPattern(
     node: ts.Node
@@ -322,6 +499,31 @@ export class ErrorPatternAnalyzer {
           }
         }
       }
+
+      // Next.js specific libraries
+      const projectStructure = this.config.getProjectStructure();
+      if (projectStructure?.projectType === "nextjs") {
+        const nextjsLibraryPatterns = [
+          /next-auth/,
+          /next-seo/,
+          /@next\/bundle-analyzer/,
+          /next-i18next/,
+          /next-themes/,
+          /@next\/font/,
+        ];
+
+        if (nextjsLibraryPatterns.some((pattern) => pattern.test(callText))) {
+          const location = ASTUtils.getNodeLocation(node, this.sourceFile);
+          if (location) {
+            return {
+              type: "async-handling",
+              location,
+              relatedStates: [],
+              pattern: callText,
+            };
+          }
+        }
+      }
     }
 
     return undefined;
@@ -362,6 +564,10 @@ export class ErrorPatternAnalyzer {
         // Joi validation
         /Joi\.(string|number|object|array)/,
         /\.validate/,
+
+        // Next.js specific form handling
+        /useFormState/,
+        /useFormStatus/,
       ];
 
       if (formValidationPatterns.some((pattern) => pattern.test(callText))) {
@@ -381,7 +587,7 @@ export class ErrorPatternAnalyzer {
   }
 
   /**
-   * Analyze async error patterns
+   * Analyze async error patterns with enhanced detection
    */
   private analyzeAsyncErrorPattern(node: ts.Node): ErrorPattern | undefined {
     // Unhandled promise patterns

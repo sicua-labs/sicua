@@ -11,6 +11,7 @@ import { generateComponentId } from "../../../utils/common/analysisUtils";
 import {
   SimilarityThresholds,
   DEFAULT_SIMILARITY_THRESHOLDS,
+  COMMON_UI_PATTERNS,
 } from "../types/deduplication.types";
 import { calculatePropsSimilarity } from "./propComparison";
 import {
@@ -25,11 +26,7 @@ import ShortUniqueId from "short-unique-id";
 const { randomUUID } = new ShortUniqueId();
 
 /**
- * Compares two components for similarity
- * @param comp1 First component
- * @param comp2 Second component
- * @param thresholds Similarity thresholds configuration
- * @returns A similarity result with scores and common elements
+ * Compares two components for similarity with balanced filtering
  */
 export function compareComponents(
   comp1: ComponentRelation,
@@ -43,14 +40,14 @@ export function compareComponents(
     comp2.jsxStructure
   );
 
-  // Calculate structure complexity to determine if components are complex enough to compare
+  // Calculate structure complexity
   const complexity1 = calculateStructureComplexity(comp1.jsxStructure);
   const complexity2 = calculateStructureComplexity(comp2.jsxStructure);
   const complexityRatio =
     Math.min(complexity1.complexity, complexity2.complexity) /
     Math.max(complexity1.complexity, complexity2.complexity);
 
-  // If structures aren't similar enough in complexity, assign low similarity
+  // Check minimum complexity requirements
   if (
     complexityRatio < thresholds.minComplexityRatio ||
     complexity1.complexity < thresholds.minStructureComplexity ||
@@ -64,7 +61,7 @@ export function compareComponents(
     );
   }
 
-  // Calculate similarity scores for different aspects
+  // Calculate base similarity scores
   const propsScore = calculatePropsSimilarity(commonProps, [comp1, comp2]);
   const childComponentScore = calculateChildComponentSimilarity(
     comp1.jsxStructure,
@@ -79,13 +76,23 @@ export function compareComponents(
     comp2.jsxStructure,
   ]);
 
+  // Apply common pattern penalty
+  const commonPatternPenalty = calculateCommonPatternPenalty(
+    comp1.jsxStructure,
+    comp2.jsxStructure
+  );
+
   // Calculate weighted similarity score
   const structureScore =
     (baseStructureScore + childComponentScore + styleScore) / 3;
-  const similarityScore =
-    Math.round((propsScore * 0.4 + structureScore * 0.6) * 100) / 100;
+  const rawSimilarityScore = propsScore * 0.4 + structureScore * 0.6;
 
-  // Generate deduplication data
+  // Apply penalty for too many common UI patterns
+  const similarityScore = Math.max(
+    0,
+    Math.round((rawSimilarityScore - commonPatternPenalty) * 100) / 100
+  );
+
   const deduplicationData = generateDeduplicationData(
     [comp1, comp2],
     commonProps,
@@ -94,7 +101,7 @@ export function compareComponents(
 
   return {
     groupId: randomUUID(),
-    components: [generateComponentId(comp1), generateComponentId(comp2)], // Use unique component IDs
+    components: [generateComponentId(comp1), generateComponentId(comp2)],
     commonProps,
     commonJSXStructure: commonStructure,
     similarityScore,
@@ -103,7 +110,51 @@ export function compareComponents(
 }
 
 /**
- * Creates a result for components with low similarity
+ * Calculates penalty for components that share mostly common UI patterns
+ */
+function calculateCommonPatternPenalty(
+  struct1?: JSXStructure,
+  struct2?: JSXStructure
+): number {
+  if (!struct1 || !struct2) return 0;
+
+  const elements1 = getAllElementNames(struct1);
+  const elements2 = getAllElementNames(struct2);
+
+  // Count common UI patterns
+  const commonPatterns1 = elements1.filter((el) =>
+    COMMON_UI_PATTERNS.includes(el)
+  ).length;
+  const commonPatterns2 = elements2.filter((el) =>
+    COMMON_UI_PATTERNS.includes(el)
+  ).length;
+
+  // Calculate ratio of common patterns
+  const ratio1 = elements1.length > 0 ? commonPatterns1 / elements1.length : 0;
+  const ratio2 = elements2.length > 0 ? commonPatterns2 / elements2.length : 0;
+  const avgRatio = (ratio1 + ratio2) / 2;
+
+  // Apply penalty if more than 70% of elements are common UI patterns
+  if (avgRatio > 0.7) {
+    return (avgRatio - 0.7) * 0.5; // Up to 15% penalty
+  }
+
+  return 0;
+}
+
+/**
+ * Gets all element names from JSX structure
+ */
+function getAllElementNames(structure: JSXStructure): string[] {
+  const names = [structure.tagName];
+  structure.children.forEach((child) => {
+    names.push(...getAllElementNames(child));
+  });
+  return names;
+}
+
+/**
+ * Creates a low similarity result
  */
 function createLowSimilarityResult(
   comp1: ComponentRelation,
@@ -111,14 +162,12 @@ function createLowSimilarityResult(
   commonProps: PropSignature[],
   commonStructure: JSXStructure[]
 ): ComponentSimilarity {
-  const similarityScore = 0.1;
-
   return {
     groupId: randomUUID(),
-    components: [generateComponentId(comp1), generateComponentId(comp2)], // Use unique component IDs
+    components: [generateComponentId(comp1), generateComponentId(comp2)],
     commonProps,
     commonJSXStructure: commonStructure,
-    similarityScore,
+    similarityScore: 0.1,
     deduplicationData: generateDeduplicationData(
       [comp1, comp2],
       commonProps,
@@ -151,25 +200,23 @@ export function generateDeduplicationData(
   commonProps: PropSignature[],
   commonStructure: JSXStructure[]
 ): ComponentDeduplicationData {
-  // Basic component data with unique component IDs
   const componentData = components.map((comp) => ({
-    name: comp.name, // Keep original name for display
+    name: comp.name,
     path: comp.fullPath,
     content: comp.content || "",
-    componentId: generateComponentId(comp), // Add unique component ID
+    componentId: generateComponentId(comp),
   }));
 
-  // Analyze prop similarities and differences with unique component IDs
   const propSimilarities = commonProps.map((prop) => ({
     name: prop.name,
     type: prop.type,
     isRequired: prop.required,
-    usedInComponents: components.map((c) => generateComponentId(c)), // Use unique component IDs
+    usedInComponents: components.map((c) => generateComponentId(c)),
   }));
 
   const propDifferences: PropDifference[] = components.map((comp) => ({
-    componentName: comp.name, // Keep original name for display
-    componentId: generateComponentId(comp), // Add unique component ID
+    componentName: comp.name,
+    componentId: generateComponentId(comp),
     uniqueProps: (comp.props || [])
       .filter((prop) => !commonProps.some((cp) => cp.name === prop.name))
       .map((prop) => ({
@@ -179,7 +226,6 @@ export function generateDeduplicationData(
       })),
   }));
 
-  // Analyze JSX similarities and differences
   const jsxSimilarity = {
     sharedRootElement: commonStructure[0]?.tagName || "",
     sharedStructure: extractSharedStructure(commonStructure),
@@ -187,8 +233,8 @@ export function generateDeduplicationData(
   };
 
   const jsxDifferences: JSXDifference[] = components.map((comp) => ({
-    componentName: comp.name, // Keep original name for display
-    componentId: generateComponentId(comp), // Add unique component ID
+    componentName: comp.name,
+    componentId: generateComponentId(comp),
     uniqueElements: findUniqueElements(comp.jsxStructure, commonStructure),
   }));
 
@@ -287,9 +333,6 @@ function findUniqueElements(
 
 /**
  * Filters similarities based on a minimum threshold
- * @param similarities Array of component similarities
- * @param threshold Minimum similarity score threshold (0.0-1.0)
- * @returns Filtered array of similarities
  */
 export function filterSignificantSimilarities(
   similarities: ComponentSimilarity[],

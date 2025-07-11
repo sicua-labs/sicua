@@ -7,15 +7,20 @@ import { ASTUtils } from "../../../utils/ast/ASTUtils";
 import { ErrorPatternUtils } from "../../../utils/error_specific/errorPatternUtils";
 import { traverseAST } from "../../../utils/ast/traversal";
 import { NodeTypeGuards } from "../../../utils/ast/nodeTypeGuards";
+import { IConfigManager } from "../../../types";
+import * as path from "path";
+import { ConfigManager } from "../../../core/configManager";
 
 /**
- * Enhanced analyzer for try-catch blocks in React components
+ * Enhanced analyzer for try-catch blocks in React components with project structure awareness
  */
 export class TryBlockAnalyzer {
   private sourceFile: ts.SourceFile;
+  private config: IConfigManager;
 
-  constructor(sourceFile: ts.SourceFile) {
+  constructor(sourceFile: ts.SourceFile, config?: IConfigManager) {
     this.sourceFile = sourceFile;
+    this.config = config || new ConfigManager(process.cwd());
   }
 
   /**
@@ -41,12 +46,13 @@ export class TryBlockAnalyzer {
   }
 
   /**
-   * Enhanced scope determination with more React patterns
+   * Enhanced scope determination with Next.js patterns and more React patterns
    */
   private determineEnhancedTryCatchScope(
     node: ts.TryStatement
   ): TryCatchBlock["scope"] {
     let current: ts.Node | undefined = node;
+    const projectStructure = this.config.getProjectStructure();
 
     while (current) {
       // JSX rendering context
@@ -84,6 +90,24 @@ export class TryBlockAnalyzer {
         ) {
           return "effect";
         }
+
+        // Next.js specific hooks
+        if (projectStructure?.projectType === "nextjs") {
+          const nextjsHooks = [
+            "useRouter",
+            "useSearchParams",
+            "usePathname",
+            "useParams",
+            "useSelectedLayoutSegment",
+            "useSelectedLayoutSegments",
+            "useFormState",
+            "useFormStatus",
+          ];
+
+          if (nextjsHooks.includes(hookName)) {
+            return "effect";
+          }
+        }
       }
 
       // Event handler patterns
@@ -119,10 +143,137 @@ export class TryBlockAnalyzer {
         return this.determineAsyncFunctionContext(current);
       }
 
+      // Next.js specific contexts
+      if (projectStructure?.projectType === "nextjs") {
+        const nextjsScope = this.determineNextJsSpecificScope(current);
+        if (nextjsScope !== "other") {
+          return nextjsScope;
+        }
+      }
+
       current = current.parent;
     }
 
     return "other";
+  }
+
+  /**
+   * Determine Next.js specific scope contexts
+   */
+  private determineNextJsSpecificScope(node: ts.Node): TryCatchBlock["scope"] {
+    const projectStructure = this.config.getProjectStructure();
+    if (projectStructure?.projectType !== "nextjs") {
+      return "other";
+    }
+
+    // Check for Next.js App Router specific contexts
+    if (projectStructure.routerType === "app") {
+      // Server actions
+      if (ts.isFunctionDeclaration(node) || ts.isArrowFunction(node)) {
+        // Check if it's a server action by looking for "use server" directive
+        const statements = this.getFunctionBodyStatements(node);
+        if (
+          statements?.some(
+            (stmt) =>
+              ts.isExpressionStatement(stmt) &&
+              ts.isStringLiteral(stmt.expression) &&
+              stmt.expression.text === "use server"
+          )
+        ) {
+          return "effect"; // Server actions are like effects
+        }
+      }
+
+      // Route handlers (app/api)
+      if (this.isAPIRouteHandler(node)) {
+        return "effect";
+      }
+
+      // Middleware
+      if (this.isMiddlewareFunction(node)) {
+        return "effect";
+      }
+    }
+
+    // Check for Next.js Pages Router specific contexts
+    if (projectStructure.routerType === "pages") {
+      // API routes
+      if (this.isAPIRouteHandler(node)) {
+        return "effect";
+      }
+
+      // Data fetching functions
+      if (this.isDataFetchingFunction(node)) {
+        return "effect";
+      }
+    }
+
+    return "other";
+  }
+
+  /**
+   * Get function body statements
+   */
+  private getFunctionBodyStatements(node: ts.Node): ts.Statement[] | undefined {
+    if (ts.isFunctionDeclaration(node) && node.body) {
+      return Array.from(node.body.statements);
+    }
+    if (ts.isArrowFunction(node) && ts.isBlock(node.body)) {
+      return Array.from(node.body.statements);
+    }
+    return undefined;
+  }
+
+  /**
+   * Check if node is an API route handler
+   */
+  private isAPIRouteHandler(node: ts.Node): boolean {
+    const fileName = this.sourceFile.fileName;
+    if (!fileName.includes("/api/") && !fileName.includes("\\api\\")) {
+      return false;
+    }
+
+    // Check for HTTP method exports
+    if (ts.isFunctionDeclaration(node) && node.name) {
+      const funcName = node.name.text;
+      const httpMethods = [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE",
+        "PATCH",
+        "HEAD",
+        "OPTIONS",
+      ];
+      return httpMethods.includes(funcName);
+    }
+
+    return false;
+  }
+
+  /**
+   * Check if node is a middleware function
+   */
+  private isMiddlewareFunction(node: ts.Node): boolean {
+    const fileName = path.basename(this.sourceFile.fileName);
+    return fileName === "middleware.ts" || fileName === "middleware.js";
+  }
+
+  /**
+   * Check if node is a data fetching function
+   */
+  private isDataFetchingFunction(node: ts.Node): boolean {
+    if (ts.isFunctionDeclaration(node) && node.name) {
+      const funcName = node.name.text;
+      const dataFetchingFunctions = [
+        "getServerSideProps",
+        "getStaticProps",
+        "getStaticPaths",
+        "getInitialProps",
+      ];
+      return dataFetchingFunctions.includes(funcName);
+    }
+    return false;
   }
 
   /**
@@ -175,6 +326,20 @@ export class TryBlockAnalyzer {
       ) {
         return true;
       }
+
+      // Next.js specific event patterns
+      const projectStructure = this.config.getProjectStructure();
+      if (projectStructure?.projectType === "nextjs") {
+        const nextjsEventPatterns = [
+          /router\.(push|replace|back|forward)/,
+          /searchParams\.(set|delete)/,
+          /form\.(submit|reset)/,
+        ];
+
+        if (nextjsEventPatterns.some((pattern) => pattern.test(callText))) {
+          return true;
+        }
+      }
     }
 
     return false;
@@ -208,10 +373,11 @@ export class TryBlockAnalyzer {
   }
 
   /**
-   * Determine context of async function
+   * Determine context of async function with Next.js awareness
    */
   private determineAsyncFunctionContext(node: ts.Node): TryCatchBlock["scope"] {
     const functionName = ASTUtils.getFunctionNameFromNode(node);
+    const projectStructure = this.config.getProjectStructure();
 
     // Event handler patterns
     if (functionName.startsWith("handle") || functionName.startsWith("on")) {
@@ -225,6 +391,29 @@ export class TryBlockAnalyzer {
       functionName.includes("init")
     ) {
       return "effect";
+    }
+
+    // Next.js specific async function patterns
+    if (projectStructure?.projectType === "nextjs") {
+      // Server component patterns
+      if (this.isServerComponent(node)) {
+        return "render";
+      }
+
+      // API route patterns
+      if (this.isAPIRouteHandler(node)) {
+        return "effect";
+      }
+
+      // Server action patterns
+      if (this.isServerAction(node)) {
+        return "effect";
+      }
+
+      // Data fetching patterns
+      if (this.isDataFetchingFunction(node)) {
+        return "effect";
+      }
     }
 
     // Check function usage context
@@ -246,7 +435,43 @@ export class TryBlockAnalyzer {
   }
 
   /**
-   * Enhanced fallback render detection
+   * Check if function is a Next.js server component
+   */
+  private isServerComponent(node: ts.Node): boolean {
+    const projectStructure = this.config.getProjectStructure();
+    if (
+      projectStructure?.projectType !== "nextjs" ||
+      projectStructure.routerType !== "app"
+    ) {
+      return false;
+    }
+
+    // Check if we're in the app directory
+    if (!this.sourceFile.fileName.includes("/app/")) {
+      return false;
+    }
+
+    // Server components are async by default in app router
+    return NodeTypeGuards.isAsyncFunction(node);
+  }
+
+  /**
+   * Check if function is a server action
+   */
+  private isServerAction(node: ts.Node): boolean {
+    const statements = this.getFunctionBodyStatements(node);
+    return (
+      statements?.some(
+        (stmt) =>
+          ts.isExpressionStatement(stmt) &&
+          ts.isStringLiteral(stmt.expression) &&
+          stmt.expression.text === "use server"
+      ) || false
+    );
+  }
+
+  /**
+   * Enhanced fallback render detection with Next.js patterns
    */
   private detectEnhancedFallbackRender(catchClause: ts.CatchClause): boolean {
     let hasFallback = false;
@@ -322,6 +547,24 @@ export class TryBlockAnalyzer {
           hasFallback = true;
           return;
         }
+
+        // Next.js specific fallback patterns
+        const projectStructure = this.config.getProjectStructure();
+        if (projectStructure?.projectType === "nextjs") {
+          const nextjsFallbackPatterns = [
+            /notFound\(/,
+            /redirect\(/,
+            /permanentRedirect\(/,
+            /router\.(push|replace)/,
+          ];
+
+          if (
+            nextjsFallbackPatterns.some((pattern) => pattern.test(callText))
+          ) {
+            hasFallback = true;
+            return;
+          }
+        }
       }
     });
 
@@ -346,7 +589,7 @@ export class TryBlockAnalyzer {
   }
 
   /**
-   * Enhanced error state updates extraction
+   * Enhanced error state updates extraction with Next.js patterns
    */
   private extractEnhancedErrorStateUpdates(
     catchClause: ts.CatchClause
@@ -437,13 +680,45 @@ export class TryBlockAnalyzer {
           }
         }
       }
+
+      // Next.js specific state updates
+      const projectStructure = this.config.getProjectStructure();
+      if (projectStructure?.projectType === "nextjs") {
+        if (ts.isCallExpression(node)) {
+          const callText = node.expression.getText();
+
+          // Next.js form state updates
+          const nextjsFormPatterns = [
+            /useFormState/,
+            /useFormStatus/,
+            /startTransition/,
+          ];
+
+          if (nextjsFormPatterns.some((pattern) => pattern.test(callText))) {
+            updates.push({
+              stateName: "nextjsFormError",
+              setter: callText,
+              value: node.arguments[0]?.getText() || "",
+            });
+          }
+
+          // Router error updates
+          if (/router\.(push|replace)/.test(callText)) {
+            updates.push({
+              stateName: "routerError",
+              setter: "router",
+              value: node.arguments[0]?.getText() || "",
+            });
+          }
+        }
+      }
     });
 
     return updates;
   }
 
   /**
-   * Enhanced error logging detection
+   * Enhanced error logging detection with Next.js patterns
    */
   private hasEnhancedErrorLogging(catchClause: ts.CatchClause): boolean {
     let hasLogging = false;
@@ -498,6 +773,19 @@ export class TryBlockAnalyzer {
           /elastic\.(apm|track)/,
           /datadog\.(increment|histogram)/,
         ];
+
+        // Next.js specific logging patterns
+        const projectStructure = this.config.getProjectStructure();
+        if (projectStructure?.projectType === "nextjs") {
+          const nextjsLoggingPatterns = [
+            /unstable_noStore/,
+            /cookies\(\)\.set/,
+            /headers\(\)\.set/,
+            /revalidatePath/,
+            /revalidateTag/,
+          ];
+          loggingPatterns.push(...nextjsLoggingPatterns);
+        }
 
         if (loggingPatterns.some((pattern) => pattern.test(callText))) {
           hasLogging = true;
@@ -600,16 +888,18 @@ export class TryBlockAnalyzer {
   }
 
   /**
-   * Analyze async try-catch patterns
+   * Analyze async try-catch patterns with Next.js awareness
    */
   public analyzeAsyncTryCatch(node: ts.TryStatement): {
     hasAwaitInTry: boolean;
     hasAsyncErrorHandling: boolean;
     hasPromiseChaining: boolean;
+    hasServerSideAsync: boolean;
   } {
     let hasAwaitInTry = false;
     let hasAsyncErrorHandling = false;
     let hasPromiseChaining = false;
+    let hasServerSideAsync = false;
 
     // Check try block for async patterns
     traverseAST(node.tryBlock, (current) => {
@@ -624,6 +914,25 @@ export class TryBlockAnalyzer {
           hasPromiseChaining = true;
           hasAsyncErrorHandling = true;
         }
+
+        // Check for Next.js server-side async operations
+        const projectStructure = this.config.getProjectStructure();
+        if (projectStructure?.projectType === "nextjs") {
+          const serverAsyncPatterns = [
+            /fetch\(/,
+            /cookies\(\)/,
+            /headers\(\)/,
+            /notFound\(/,
+            /redirect\(/,
+            /revalidatePath/,
+            /revalidateTag/,
+          ];
+
+          if (serverAsyncPatterns.some((pattern) => pattern.test(callText))) {
+            hasServerSideAsync = true;
+            hasAsyncErrorHandling = true;
+          }
+        }
       }
     });
 
@@ -631,6 +940,7 @@ export class TryBlockAnalyzer {
       hasAwaitInTry,
       hasAsyncErrorHandling,
       hasPromiseChaining,
+      hasServerSideAsync,
     };
   }
 }

@@ -2,17 +2,19 @@
 
 A comprehensive static analysis tool for TypeScript/React projects that generates detailed insights about your codebase structure, complexity, and potential issues.
 
+> ⚠️ **Alpha Release** - Currently in alpha stage. Best compatibility with **Next.js 13.4+** TypeScript projects using the **App Router**. Pages Router and pure React projects are supported but may have limited features.
+
 ## Installation
 
 ```bash
 npm install -g sicua
 ```
 
-## Quick Start
+## Quick Analysis
 
 ```bash
 # Analyze current directory
-sicua
+npx sicua
 ```
 
 ## Features
@@ -30,7 +32,7 @@ sicua
 - **SEO Analysis**: Meta tags, structured data, performance optimization
 - **Translation Coverage**: Missing translations, duplicate keys
 - **Type Analysis**: Complex types, duplicate types, usage patterns
-- **Contextual Summaries**: Business logic extraction, semantic analysis
+- **Security Analysis**: Basic Security Analysis and vulnerability detections
 - **Deduplication**: Component similarity detection and grouping
 
 ### 🎯 **Framework Support**
@@ -45,7 +47,7 @@ sicua
 ### Basic Analysis
 
 ```bash
-sicua analyze ./my-project
+sicua
 ```
 
 ### Output
@@ -90,7 +92,7 @@ The tool generates a comprehensive JSON report containing:
 
 ## Project Structure Analysis
 
-AnalysisGen analyzes:
+Sicua analyzes:
 
 - **Components**: React components, hooks, context providers
 - **Pages/Routes**: Next.js pages, API routes, middleware
@@ -107,25 +109,30 @@ AnalysisGen analyzes:
 ## CLI Options
 
 ```bash
-sicua analyze [project-path] [options]
+sicua [options]
 
 Options:
-  -o, --output <file>     Output file path (default: analysis-result.json)
-  -v, --verbose           Verbose logging
-  -h, --help             Display help information
+  -p, --path <path>              Path to the project (default: current directory)
+  -o, --output <path>            Output file path (default: analysis-results.json)
+  --src <dir>                    Source directory to analyze
+  --root-components <names>      Root component names (comma-separated)
+  --extensions <exts>            File extensions to process (comma-separated)  
+  --verbose                      Enable verbose output
+  --force                        Force analysis even if validation fails
+  -V, --version                  Show version number
+  -h, --help                     Display help information
+
+# Additional commands
+sicua validate                   # Validate project structure
+sicua init                       # Initialize config file  
+sicua info                       # Show project information
 ```
 
-## Integration
+# Additional commands
 
-### CI/CD Integration
-
-```yaml
-# GitHub Actions example
-- name: Run Code Analysis
-  run: |
-    npm install -g sicua
-    sicua analyze . --output analysis.json
-```
+sicua validate # Validate project structure
+sicua init # Initialize config file  
+sicua info # Show project information
 
 ## Analysis Categories
 
@@ -150,20 +157,29 @@ Options:
 - Translation completeness
 - Code deduplication suggestions
 
+## 🌐 Full Analysis Platform
+
+Upload your analysis results to [sicualabs.com](https://sicualabs.com) for:
+
+- Interactive dependency graphs
+- Detailed recommendations
+- AI Multi Model Analysis
+- Historical tracking
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and contribution guidelines.
 
 ## License
 
-ISC License - see [LICENSE](LICENSE) file for details.
+MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Support
 
-- 📚 [Documentation](https://github.com/yourusername/sicua/wiki)
-- 🐛 [Report Issues](https://github.com/yourusername/sicua/issues)
-- 💬 [Discussions](https://github.com/yourusername/sicua/discussions)
+- 📚 [Documentation](https://github.com/sicualabs/sicua/wiki)
+- 🐛 [Report Issues](https://github.com/sicualabs/sicua/issues)
+- 💬 [Discussions](https://github.com/sicualabs/sicua/discussions)
 
 ---
 
-**AnalysisGen** - Understand your codebase better, ship with confidence.
+**Sicua** - Understand your codebase better, ship with confidence.

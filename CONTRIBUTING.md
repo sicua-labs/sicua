@@ -1,6 +1,6 @@
-# Contributing to AnalysisGen
+# Contributing to Sicua
 
-Thank you for your interest in contributing to AnalysisGen! This document provides guidelines and information for contributors.
+Thank you for your interest in contributing to Sicua! This document provides guidelines and information for contributors.
 
 ## Table of Contents
 
@@ -28,13 +28,13 @@ This project adheres to a code of conduct that we expect all contributors to fol
 2. **Clone your fork** locally:
 
    ```bash
-   git clone https://github.com/yourusername/sicua.git
+   git clone https://github.com/sicualabs/sicua.git
    cd sicua
    ```
 
 3. **Add the upstream remote**:
    ```bash
-   git remote add upstream https://github.com/originalowner/sicua.git
+   git remote add upstream https://github.com/sicualabs/sicua.git
    ```
 
 ## Development Setup
@@ -58,8 +58,9 @@ This project adheres to a code of conduct that we expect all contributors to fol
    ```
 
 4. **Link the package to your targeted project**:
+
    ```bash
-   pnpm link --sicua
+   pnpm link sicua
    ```
 
 5. **Run the package from the terminal**:
@@ -276,4 +277,4 @@ Releases are handled by maintainers:
 - **Create a new issue** with the `question` label
 - **Be specific** about what you're trying to achieve
 
-Thank you for contributing to AnalysisGen! 🚀
+Thank you for contributing to Sicua! 🚀

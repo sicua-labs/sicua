@@ -1,5 +1,5 @@
 import * as path from "path";
-import { ConfigManager, ScanResult } from "../types";
+import { IConfigManager, ScanResult } from "../types";
 import { getNodeSize, getNodeColor } from "./graphFormatUtils";
 import {
   FileSystemNode,
@@ -199,7 +199,7 @@ function getRouteType(fileName: string): string | undefined {
  */
 function extractStructureInfo(
   scanResult: ScanResult,
-  config: ConfigManager
+  config: IConfigManager
 ): StructureScanResult {
   const directories = new Map<
     string,
@@ -334,7 +334,7 @@ function extractStructureInfo(
  */
 export function generateStructureGraphData(
   scanResult: ScanResult,
-  config: ConfigManager
+  config: IConfigManager
 ): {
   getStructureData: () => FileStructureGraph;
 } {

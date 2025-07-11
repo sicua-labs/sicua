@@ -2,7 +2,15 @@
  * Configuration types for project analysis
  */
 
-import { ContextualSummariesConfig } from "../analyzers/contextualSummaries/types/contextualSummaries.types";
+// Project structure detection interface
+export interface ProjectStructureDetection {
+  projectType: "nextjs" | "react";
+  nextjsVersion?: string;
+  routerType?: "app" | "pages";
+  detectedSourceDirectory: string;
+  hasSourceDirectory: boolean;
+  availableDirectories: string[];
+}
 
 // Configuration types
 export interface ProjectAnalysisConfig {
@@ -10,9 +18,15 @@ export interface ProjectAnalysisConfig {
   rootComponentNames: string[];
   srcDir: string;
   outputFileName: string;
-  contextualSummaries?: ContextualSummariesConfig;
 }
 
-export interface ConfigManager extends ProjectAnalysisConfig {
+export interface IConfigManager extends ProjectAnalysisConfig {
   projectPath: string;
+
+  // Methods for project structure detection
+  getProjectStructure(): ProjectStructureDetection | null;
+  isSourceDirectoryDetected(): boolean;
+  updateSourceDirectory(newSrcDir: string): void;
+  validateConfig(): string[];
+  getConfigSummary(): string;
 }

@@ -1,7 +1,6 @@
 import ts from "typescript";
 import { ComponentRelation } from "../../../types";
 import { HeadingAnalysis } from "../../../types/seoCoverageTypes";
-import { SeoRelated } from "../../../utils/common/seoRelatedUtils";
 import { ComponentUtils } from "../utils/componentUtils";
 import { JsxUtils } from "../utils/jsxUtils";
 import { PageComponentMap } from "../types/internalTypes";
@@ -37,9 +36,9 @@ export class HeadingAnalyzer {
       }
     >();
 
-    // Analyze headings in each page, filtering out UI components
+    // Analyze headings in each page component, with improved filtering
     this.pageComponents.forEach((component, pagePath) => {
-      // Skip analysis for UI components
+      // Skip analysis for UI components with improved detection
       if (this.isUIComponent(component)) {
         return;
       }
@@ -107,7 +106,7 @@ export class HeadingAnalyzer {
       });
     });
 
-    // Aggregate results
+    // Aggregate results (rest of the method remains the same)
     const allIssues: HeadingAnalysis["hierarchyIssues"] = [];
     const headingLevelDistribution = {
       h1: 0,
@@ -156,26 +155,132 @@ export class HeadingAnalyzer {
     };
   }
 
-  // Helper method to determine if component is a UI component
+  /**
+   *  method to determine if component is a UI component vs a page component
+   */
   private isUIComponent(component: ComponentRelation): boolean {
-    // Use ComponentUtils to check if this is a UI component
     const normalizedPath = path.normalize(component.fullPath);
+    const fileName = path.basename(
+      normalizedPath,
+      path.extname(normalizedPath)
+    );
+
+    // Rule 1: Check if it's in a components directory
     const isInComponentsDir =
       normalizedPath.includes("/components/") ||
-      normalizedPath.includes("\\components\\");
+      normalizedPath.includes("\\components\\") ||
+      normalizedPath.includes("/ui/") ||
+      normalizedPath.includes("\\ui\\");
 
-    // If it's in a components directory but ComponentUtils still classified it as a page,
-    // it might be a page-level component in a components directory
-    if (isInComponentsDir) {
-      // Check if this component has metadata or other page indicators
-      const hasPageAttributes =
-        component.exports.includes("metadata") ||
-        component.exports.includes("generateMetadata");
+    // Rule 2: Common UI component naming patterns
+    const uiComponentPatterns = [
+      /^Button$/i,
+      /^Input$/i,
+      /^Modal$/i,
+      /^Dialog$/i,
+      /^Card$/i,
+      /^Header$/i,
+      /^Footer$/i,
+      /^Sidebar$/i,
+      /^Navigation$/i,
+      /^Nav$/i,
+      /^Menu$/i,
+      /^Dropdown$/i,
+      /^Tooltip$/i,
+      /^Badge$/i,
+      /^Avatar$/i,
+      /^Icon$/i,
+      /^Loading$/i,
+      /^Spinner$/i,
+      /^Skeleton$/i,
+      /^Alert$/i,
+      /^Toast$/i,
+      /^Notification$/i,
+      /^Accordion$/i,
+      /^Tabs$/i,
+      /^Tab$/i,
+      /^Form$/i,
+      /^Table$/i,
+      /^List$/i,
+      /^Item$/i,
+      /.*Button$/i,
+      /.*Input$/i,
+      /.*Modal$/i,
+      /.*Card$/i,
+      /.*Icon$/i,
+      /.*Component$/i,
+    ];
 
-      // Consider it a UI component if it's in components dir and lacks page attributes
-      return !hasPageAttributes;
+    const matchesUIPattern = uiComponentPatterns.some((pattern) =>
+      pattern.test(fileName)
+    );
+
+    // Rule 3: Check for page-specific indicators that override UI classification
+    const pageIndicators = [
+      // Next.js App Router special files
+      normalizedPath.endsWith("page.tsx") ||
+        normalizedPath.endsWith("page.jsx") ||
+        normalizedPath.endsWith("layout.tsx") ||
+        normalizedPath.endsWith("layout.jsx") ||
+        normalizedPath.endsWith("template.tsx") ||
+        normalizedPath.endsWith("template.jsx") ||
+        normalizedPath.endsWith("error.tsx") ||
+        normalizedPath.endsWith("error.jsx") ||
+        normalizedPath.endsWith("loading.tsx") ||
+        normalizedPath.endsWith("loading.jsx") ||
+        normalizedPath.endsWith("not-found.tsx") ||
+        normalizedPath.endsWith("not-found.jsx"),
+
+      // Metadata exports (strong page indicator)
+      component.exports.includes("metadata") ||
+        component.exports.includes("generateMetadata"),
+
+      // Content suggests it's a page
+      component.content?.includes("generateMetadata") ||
+        component.content?.includes("export const metadata") ||
+        component.content?.includes("export default function Page") ||
+        component.content?.includes("export default function Layout"),
+
+      // Route-like directory structure (pages router or app router)
+      normalizedPath.includes("/pages/") ||
+        normalizedPath.includes("\\pages\\") ||
+        (normalizedPath.includes("/app/") &&
+          !normalizedPath.includes("/components/")),
+    ];
+
+    const hasPageIndicators = pageIndicators.some((indicator) => indicator);
+
+    // Rule 4: If it's in components dir AND has page indicators, it's likely a page
+    if (isInComponentsDir && hasPageIndicators) {
+      return false; // Not a UI component
     }
 
+    // Rule 5: If it's in components dir AND matches UI patterns, it's a UI component
+    if (isInComponentsDir && matchesUIPattern) {
+      return true; // Is a UI component
+    }
+
+    // Rule 6: If it's in components dir but doesn't match UI patterns and has no page indicators,
+    // check if it has substantial content (likely a page component in components dir)
+    if (isInComponentsDir && !matchesUIPattern && !hasPageIndicators) {
+      // Check for substantial page-like content
+      const hasSubstantialContent =
+        component.content &&
+        (component.content.length > 1000 || // Large component
+          component.content.includes("<h1") || // Has main heading
+          component.content.includes("<main") || // Has main tag
+          component.content.includes("<article") || // Has article tag
+          (component.content.match(/<h[1-6]/g) || []).length > 2); // Multiple headings
+
+      return !hasSubstantialContent; // If substantial content, treat as page component
+    }
+
+    // Rule 7: If not in components dir but matches UI patterns, still might be UI component
+    if (!isInComponentsDir && matchesUIPattern && !hasPageIndicators) {
+      return true;
+    }
+
+    // Default: if it has page indicators or is outside components dir, treat as page component
     return false;
   }
 

@@ -13,17 +13,22 @@ import {
 import { RouteScanner } from "./scanners/RouteScanner";
 import { FlowTreeBuilder } from "./builders/FlowTreeBuilder";
 import { RouteCoverageBuilder } from "./builders/RouteCoverageBuilder";
-import { ComponentRelation } from "../../types";
+import { ComponentRelation, ScanResult } from "../../types";
+import { ComponentLookupService } from "../../core/componentLookupService";
 import { matchesPattern } from "./utils";
+import { PathResolver } from "../../parsers/pathResolver";
 
 /**
- * Main analyzer that orchestrates component flow analysis for Next.js applications
+ * Component flow analyzer using optimized services for enhanced performance
  */
 export class ComponentFlowAnalyzer {
   private projectRoot: string;
   private srcDirectory: string;
   private appDirectory: string;
   private components: ComponentRelation[];
+  private lookupService: ComponentLookupService;
+  private pathResolver: PathResolver;
+  private scanResult: ScanResult;
   private config: ComponentFlowConfig;
   private errors: FlowAnalysisError[];
 
@@ -31,10 +36,19 @@ export class ComponentFlowAnalyzer {
     projectRoot: string,
     srcDirectory: string,
     components: ComponentRelation[],
+    lookupService: ComponentLookupService,
+    pathResolver: PathResolver,
+    scanResult: ScanResult,
     config: Partial<ComponentFlowConfig> = {}
   ) {
     this.projectRoot = projectRoot;
     this.srcDirectory = srcDirectory;
+    this.components = components;
+    this.lookupService = lookupService;
+    this.pathResolver = pathResolver;
+    this.scanResult = scanResult;
+    this.config = this.mergeWithDefaultConfig(config);
+    this.errors = [];
 
     // Find the app directory in common locations
     const possibleAppDirs = [
@@ -52,13 +66,10 @@ export class ComponentFlowAnalyzer {
     }
 
     this.appDirectory = appDirectory || path.join(projectRoot, "app");
-    this.components = components;
-    this.config = this.mergeWithDefaultConfig(config);
-    this.errors = [];
   }
 
   /**
-   * Performs complete component flow analysis
+   * Performs complete component flow analysis using optimized services
    */
   async analyze(): Promise<ComponentFlowAnalysisResult> {
     try {
@@ -83,12 +94,12 @@ export class ComponentFlowAnalyzer {
       // Filter routes if specified in config
       const filteredRoutes = this.filterRoutes(routeStructures);
 
-      // Build flow trees for all routes
+      // Build flow trees for all routes using optimized services
       const flowTreeBuilder = new FlowTreeBuilder(
-        this.projectRoot,
-        this.srcDirectory,
         this.appDirectory,
-        this.components,
+        this.lookupService,
+        this.pathResolver,
+        this.scanResult,
         this.config
       );
 
@@ -108,7 +119,7 @@ export class ComponentFlowAnalyzer {
         }
       }
 
-      // Extract external dependencies
+      // Extract external dependencies using optimized detection
       const externalDependencies =
         this.extractExternalDependencies(routeFlowTrees);
 
@@ -135,7 +146,7 @@ export class ComponentFlowAnalyzer {
   }
 
   /**
-   * Analyzes a single route
+   * Analyzes a single route using optimized services
    */
   async analyzeSingleRoute(routePath: string): Promise<RouteFlowTree | null> {
     try {
@@ -147,10 +158,10 @@ export class ComponentFlowAnalyzer {
       }
 
       const flowTreeBuilder = new FlowTreeBuilder(
-        this.projectRoot,
-        this.srcDirectory,
         this.appDirectory,
-        this.components,
+        this.lookupService,
+        this.pathResolver,
+        this.scanResult,
         this.config
       );
 
@@ -372,7 +383,7 @@ export class ComponentFlowAnalyzer {
   }
 
   /**
-   * Extracts external dependencies from route flow trees
+   * Extracts external dependencies from route flow trees using optimized detection
    */
   private extractExternalDependencies(
     routeFlowTrees: EnhancedRouteFlowTree[]
@@ -388,22 +399,15 @@ export class ComponentFlowAnalyzer {
       this.collectImportsFromComponent(tree.pageComponent, allImports);
     }
 
-    const nodeModuleDetector = require("./utils/NodeModuleDetector");
-    const detector = new nodeModuleDetector.NodeModuleDetector(
-      this.projectRoot,
-      this.srcDirectory
-    );
-
-    // Build dependency usage map
+    // Build dependency usage map using PathResolver for external detection
     for (const tree of routeFlowTrees) {
       const routeImports = new Set<string>();
       this.collectImportsFromComponent(tree.pageComponent, routeImports);
 
       for (const importPath of routeImports) {
-        if (
-          detector.isExternalComponent(importPath, tree.pageComponent.filePath)
-        ) {
-          const packageName = detector.getPackageName(importPath);
+        // Use PathResolver to check if import is external
+        if (this.pathResolver.isExternalPackage(importPath)) {
+          const packageName = this.pathResolver.extractPackageName(importPath);
 
           if (!dependencyMap.has(packageName)) {
             dependencyMap.set(packageName, {

@@ -1,17 +1,17 @@
 import ts from "typescript";
-import {
-  FunctionErrorHandling,
-  ErrorHandlingLocation,
-} from "../../../types/errorHandling.types";
+import { FunctionErrorHandling } from "../../../types/errorHandling.types";
 import { ASTUtils } from "../../../utils/ast/ASTUtils";
 import { RiskAnalysisUtils } from "../../../utils/error_specific/riskAnalysisUtils";
 import { traverseAST } from "../../../utils/ast/traversal";
 import { NodeTypeGuards } from "../../../utils/ast/nodeTypeGuards";
 import { TryBlockAnalyzer } from "./tryBlockAnalyzer";
 import { ErrorPatternAnalyzer } from "./errorPatternAnalyzer";
+import { IConfigManager, ScanResult } from "../../../types";
+import * as path from "path";
+import { ConfigManager } from "../../../core/configManager";
 
 /**
- * Enhanced analyzer for function-level error handling with comprehensive risk assessment
+ * Enhanced analyzer for function-level error handling with comprehensive risk assessment and project structure awareness
  */
 export class FunctionAnalyzer {
   private sourceFile: ts.SourceFile;
@@ -19,17 +19,55 @@ export class FunctionAnalyzer {
   private tryBlockAnalyzer: TryBlockAnalyzer;
   private errorPatternAnalyzer: ErrorPatternAnalyzer;
   private imports: Map<string, string> = new Map();
+  private config: IConfigManager;
+  private scanResult: ScanResult;
 
-  constructor(sourceFile: ts.SourceFile, typeChecker: ts.TypeChecker) {
+  constructor(
+    sourceFile: ts.SourceFile,
+    typeChecker: ts.TypeChecker,
+    config?: IConfigManager,
+    scanResult?: ScanResult
+  ) {
     this.sourceFile = sourceFile;
     this.typeChecker = typeChecker;
-    this.tryBlockAnalyzer = new TryBlockAnalyzer(sourceFile);
-    this.errorPatternAnalyzer = new ErrorPatternAnalyzer(sourceFile);
+    this.config = config || new ConfigManager(process.cwd());
+    this.scanResult = scanResult || this.createFallbackScanResult();
+    this.tryBlockAnalyzer = new TryBlockAnalyzer(sourceFile, this.config);
+    this.errorPatternAnalyzer = new ErrorPatternAnalyzer(
+      sourceFile,
+      this.config
+    );
     this.analyzeImports();
   }
 
   /**
-   * Analyze import statements to understand available libraries
+   * Create fallback scan result if not provided
+   */
+  private createFallbackScanResult(): ScanResult {
+    return {
+      filePaths: [this.sourceFile.fileName],
+      sourceFiles: new Map([[this.sourceFile.fileName, this.sourceFile]]),
+      fileContents: new Map(),
+      fileMetadata: new Map(),
+      securityFiles: [],
+      configFiles: [],
+      environmentFiles: [],
+      apiRoutes: [],
+      middlewareFiles: [],
+      packageInfo: [],
+      securityScanMetadata: {
+        scanTimestamp: Date.now(),
+        scanDuration: 0,
+        filesScanned: 1,
+        securityIssuesFound: 0,
+        riskLevel: "low",
+        coveragePercentage: 0,
+      },
+    };
+  }
+
+  /**
+   * Analyze import statements to understand available libraries with enhanced resolution
    */
   private analyzeImports(): void {
     traverseAST(this.sourceFile, (node) => {
@@ -38,25 +76,53 @@ export class FunctionAnalyzer {
         ts.isStringLiteral(node.moduleSpecifier)
       ) {
         const moduleName = node.moduleSpecifier.text;
+        const resolvedModuleName = this.resolveImportPath(moduleName);
 
         if (
           node.importClause?.namedBindings &&
           ts.isNamedImports(node.importClause.namedBindings)
         ) {
           node.importClause.namedBindings.elements.forEach((element) => {
-            this.imports.set(element.name.text, moduleName);
+            this.imports.set(element.name.text, resolvedModuleName);
           });
         }
 
         if (node.importClause?.name) {
-          this.imports.set(node.importClause.name.text, moduleName);
+          this.imports.set(node.importClause.name.text, resolvedModuleName);
         }
       }
     });
   }
 
   /**
-   * Enhanced function analysis with comprehensive risk assessment
+   * Resolve import paths using project structure context
+   */
+  private resolveImportPath(importPath: string): string {
+    // Skip external packages
+    if (!importPath.startsWith(".") && !importPath.startsWith("/")) {
+      return importPath;
+    }
+
+    try {
+      const currentDir = path.dirname(this.sourceFile.fileName);
+      const projectStructure = this.config.getProjectStructure();
+
+      if (importPath.startsWith(".")) {
+        // Relative import
+        return path.resolve(currentDir, importPath);
+      } else {
+        // Absolute import from project root
+        const baseDir =
+          projectStructure?.detectedSourceDirectory || this.config.projectPath;
+        return path.resolve(baseDir, importPath.substring(1));
+      }
+    } catch (error) {
+      return importPath; // Fallback to original path
+    }
+  }
+
+  /**
+   * Enhanced function analysis with comprehensive risk assessment and project structure awareness
    */
   public analyzeFunctionWithRisk(
     node: ts.Node
@@ -66,7 +132,7 @@ export class FunctionAnalyzer {
 
     if (!location) return undefined;
 
-    // Enhanced risk indicators with more patterns
+    // Enhanced risk indicators with Next.js specific patterns
     const riskIndicators = {
       hasAsyncOperations: false,
       hasFileOperations: false,
@@ -78,11 +144,14 @@ export class FunctionAnalyzer {
       hasComplexCalculations: false,
       hasThirdPartyLibraryCalls: false,
       hasDataTransformations: false,
+      hasServerSideOperations: false,
+      hasRouterOperations: false,
+      hasAuthenticationOperations: false,
     };
 
     let riskScore = 0;
 
-    // Comprehensive risk analysis
+    // Comprehensive risk analysis with project structure awareness
     traverseAST(node, (currentNode) => {
       // Enhanced async/await operations
       if (this.isEnhancedAsyncOperation(currentNode)) {
@@ -144,6 +213,24 @@ export class FunctionAnalyzer {
         riskScore += 1;
       }
 
+      // Next.js specific server-side operations
+      if (this.isServerSideOperation(currentNode)) {
+        riskIndicators.hasServerSideOperations = true;
+        riskScore += 2;
+      }
+
+      // Next.js router operations
+      if (this.isRouterOperation(currentNode)) {
+        riskIndicators.hasRouterOperations = true;
+        riskScore += 1;
+      }
+
+      // Authentication operations
+      if (this.isAuthenticationOperation(currentNode)) {
+        riskIndicators.hasAuthenticationOperations = true;
+        riskScore += 2;
+      }
+
       // Additional risk patterns
       riskScore += this.analyzeAdditionalRiskPatterns(currentNode);
     });
@@ -164,6 +251,22 @@ export class FunctionAnalyzer {
       errorPropagation.customErrorClasses.length > 0 ||
       errorTypes.size > 0;
 
+    // Adjust risk threshold based on project structure
+    const projectStructure = this.config.getProjectStructure();
+    let riskThreshold = 3;
+
+    if (projectStructure?.projectType === "nextjs") {
+      // Lower threshold for Next.js server-side code
+      if (this.isServerSideFunction(node)) {
+        riskThreshold = 2;
+      }
+
+      // API routes should have stricter requirements
+      if (this.isAPIRoute()) {
+        riskThreshold = 1;
+      }
+    }
+
     return {
       functionName,
       location,
@@ -172,12 +275,163 @@ export class FunctionAnalyzer {
       errorPropagation,
       errorTypes,
       riskAnalysis: {
-        shouldHaveErrorHandling: riskScore >= 3,
+        shouldHaveErrorHandling: riskScore >= riskThreshold,
         riskIndicators,
         riskScore,
       },
       hasErrorHandling,
     };
+  }
+
+  /**
+   * Check if function is server-side in Next.js
+   */
+  private isServerSideFunction(node: ts.Node): boolean {
+    const projectStructure = this.config.getProjectStructure();
+    if (projectStructure?.projectType !== "nextjs") {
+      return false;
+    }
+
+    // Check if function is async (likely server component)
+    if (NodeTypeGuards.isAsyncFunction(node)) {
+      return true;
+    }
+
+    // Check for server-only imports
+    let hasServerImports = false;
+    traverseAST(node, (currentNode) => {
+      if (
+        ts.isImportDeclaration(currentNode) &&
+        ts.isStringLiteral(currentNode.moduleSpecifier)
+      ) {
+        const importPath = currentNode.moduleSpecifier.text;
+        const serverOnlyPackages = [
+          "fs",
+          "path",
+          "crypto",
+          "os",
+          "server-only",
+        ];
+        if (
+          serverOnlyPackages.some(
+            (pkg) => importPath === pkg || importPath.startsWith(`${pkg}/`)
+          )
+        ) {
+          hasServerImports = true;
+        }
+      }
+    });
+
+    return hasServerImports;
+  }
+
+  /**
+   * Check if we're in an API route file
+   */
+  private isAPIRoute(): boolean {
+    const fileName = this.sourceFile.fileName;
+    return fileName.includes("/api/") || fileName.includes("\\api\\");
+  }
+
+  /**
+   * Check for Next.js specific server-side operations
+   */
+  private isServerSideOperation(node: ts.Node): boolean {
+    const projectStructure = this.config.getProjectStructure();
+    if (projectStructure?.projectType !== "nextjs") {
+      return false;
+    }
+
+    if (ts.isCallExpression(node)) {
+      const callText = node.expression.getText();
+
+      // Next.js App Router server functions
+      const serverFunctions = [
+        /cookies\(\)/,
+        /headers\(\)/,
+        /notFound\(/,
+        /redirect\(/,
+        /permanentRedirect\(/,
+        /unstable_noStore\(/,
+        /revalidatePath\(/,
+        /revalidateTag\(/,
+      ];
+
+      if (serverFunctions.some((pattern) => pattern.test(callText))) {
+        return true;
+      }
+
+      // Pages Router server functions
+      const pagesFunctions = [
+        /getServerSideProps/,
+        /getStaticProps/,
+        /getStaticPaths/,
+        /getInitialProps/,
+      ];
+
+      if (pagesFunctions.some((pattern) => pattern.test(callText))) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Check for router operations
+   */
+  private isRouterOperation(node: ts.Node): boolean {
+    const projectStructure = this.config.getProjectStructure();
+    if (projectStructure?.projectType !== "nextjs") {
+      return false;
+    }
+
+    if (ts.isCallExpression(node)) {
+      const callText = node.expression.getText();
+
+      const routerPatterns = [
+        /router\.(push|replace|back|forward|reload)/,
+        /useRouter\(/,
+        /useSearchParams\(/,
+        /usePathname\(/,
+        /useParams\(/,
+        /useSelectedLayoutSegment/,
+        /useSelectedLayoutSegments/,
+      ];
+
+      return routerPatterns.some((pattern) => pattern.test(callText));
+    }
+
+    return false;
+  }
+
+  /**
+   * Check for authentication operations
+   */
+  private isAuthenticationOperation(node: ts.Node): boolean {
+    if (ts.isCallExpression(node)) {
+      const callText = node.expression.getText();
+
+      const authPatterns = [
+        /signIn/,
+        /signOut/,
+        /authenticate/,
+        /authorize/,
+        /getSession/,
+        /useSession/,
+        /jwt\.(sign|verify)/,
+        /bcrypt\.(hash|compare)/,
+        /passport\./,
+        /auth0\./,
+        /firebase\.auth/,
+        /supabase\.auth/,
+        /clerk\./,
+      ];
+
+      return authPatterns.some((pattern) => pattern.test(callText));
+    }
+
+    return false;
   }
 
   /**
@@ -235,6 +489,10 @@ export class FunctionAnalyzer {
         // Web APIs
         /cache\./,
         /indexedDB/,
+
+        // Next.js specific
+        /fs\.(readFile|writeFile|readdir)/,
+        /path\.(join|resolve)/,
       ];
 
       return filePatterns.some((pattern) => pattern.test(callText));
@@ -278,6 +536,11 @@ export class FunctionAnalyzer {
         /apollo/,
         /graphql/,
         /relay/,
+
+        // Next.js specific
+        /fetch\(/,
+        /axios\./,
+        /unstable_cache/,
       ];
 
       return networkPatterns.some((pattern) => pattern.test(callText));
@@ -323,6 +586,10 @@ export class FunctionAnalyzer {
         /btoa/,
         /atob/,
         /Buffer\.(from|toString)/,
+
+        // Next.js specific
+        /searchParams\.(get|getAll)/,
+        /headers\(\)\.get/,
       ];
 
       return parsingPatterns.some((pattern) => pattern.test(callText));
@@ -372,6 +639,11 @@ export class FunctionAnalyzer {
         // Mapping
         /mapbox/i,
         /googlemaps/i,
+
+        // Next.js specific APIs
+        /vercel/i,
+        /planetscale/i,
+        /supabase/i,
       ];
 
       return apiPatterns.some((pattern) => pattern.test(callText));
@@ -414,6 +686,13 @@ export class FunctionAnalyzer {
         /localStorage/,
         /sessionStorage/,
         /indexedDB/,
+
+        // Next.js specific databases
+        /prisma\./,
+        /drizzle/i,
+        /planetscale/i,
+        /neon/i,
+        /supabase\./,
       ];
 
       return dbPatterns.some((pattern) => pattern.test(callText));
@@ -452,6 +731,12 @@ export class FunctionAnalyzer {
         /router\.(push|replace|go)/,
         /navigate/,
         /history\.(push|replace)/,
+
+        // Next.js specific state
+        /useSearchParams/,
+        /useRouter/,
+        /revalidatePath/,
+        /revalidateTag/,
       ];
 
       return statePatterns.some((pattern) => pattern.test(callText));
@@ -535,6 +820,9 @@ export class FunctionAnalyzer {
         "plotly",
         "leaflet",
         "mapbox",
+        "next-auth",
+        "prisma",
+        "drizzle-orm",
       ];
 
       return thirdPartyLibraries.some(
@@ -580,6 +868,10 @@ export class FunctionAnalyzer {
         /stringify/,
         /encode/,
         /decode/,
+
+        // Next.js specific transformations
+        /searchParams\.(toString|sort)/,
+        /headers\(\)\.(forEach|entries)/,
       ];
 
       return transformationPatterns.some((pattern) => pattern.test(callText));
@@ -589,7 +881,7 @@ export class FunctionAnalyzer {
   }
 
   /**
-   * Analyze additional risk patterns specific to modern development
+   * Analyze additional risk patterns specific to modern development and Next.js
    */
   private analyzeAdditionalRiskPatterns(node: ts.Node): number {
     let additionalRisk = 0;
@@ -627,6 +919,25 @@ export class FunctionAnalyzer {
       // Form validation with external schemas
       if (/yup\.|zod\.|joi\./.test(callText)) {
         additionalRisk += 1;
+      }
+
+      // Next.js specific risk patterns
+      const projectStructure = this.config.getProjectStructure();
+      if (projectStructure?.projectType === "nextjs") {
+        // Server actions
+        if (/use(Server)?Action|useFormState|useFormStatus/.test(callText)) {
+          additionalRisk += 2;
+        }
+
+        // Edge runtime functions
+        if (/edge|runtime|middleware/.test(callText)) {
+          additionalRisk += 1;
+        }
+
+        // Image optimization
+        if (/next\/image|Image/.test(callText)) {
+          additionalRisk += 1;
+        }
       }
     }
 
@@ -737,6 +1048,7 @@ export class FunctionAnalyzer {
       }
 
       // Thrown error types
+      // Thrown error types
       if (ts.isThrowStatement(currentNode)) {
         if (ts.isNewExpression(currentNode.expression)) {
           const errorTypeName = currentNode.expression.expression.getText();
@@ -756,13 +1068,31 @@ export class FunctionAnalyzer {
           errorTypes.add(typeString);
         }
       }
+
+      // Next.js specific error types
+      const projectStructure = this.config.getProjectStructure();
+      if (projectStructure?.projectType === "nextjs") {
+        if (ts.isCallExpression(currentNode)) {
+          const callText = currentNode.expression.getText();
+
+          // Next.js specific error handling
+          if (/notFound\(|redirect\(|permanentRedirect\(/.test(callText)) {
+            errorTypes.add("NextResponse");
+          }
+
+          // Server action errors
+          if (/useFormState|useFormStatus/.test(callText)) {
+            errorTypes.add("FormState");
+          }
+        }
+      }
     });
 
     return errorTypes;
   }
 
   /**
-   * Analyze all functions in a file
+   * Analyze all functions in a file with enhanced project structure awareness
    */
   public analyzeFunctions(): FunctionErrorHandling[] {
     const functions: FunctionErrorHandling[] = [];
@@ -780,7 +1110,7 @@ export class FunctionAnalyzer {
   }
 
   /**
-   * Analyze all functions within a component node
+   * Analyze all functions within a component node with enhanced filtering
    */
   public analyzeComponentFunctions(node: ts.Node): FunctionErrorHandling[] {
     const functions: FunctionErrorHandling[] = [];

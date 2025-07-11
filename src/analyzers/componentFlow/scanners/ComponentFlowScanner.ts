@@ -1,9 +1,8 @@
-import * as fs from "fs";
 import traverse, { NodePath } from "@babel/traverse";
 import * as t from "@babel/types";
 import { JSXReturnAnalyzer } from "./JSXReturnAnalyzer";
-import { ComponentReferenceResolver } from "../parsers/ComponentReferenceResolver";
-import { ComponentRelation } from "../../../types";
+import { ComponentRelation, ScanResult } from "../../../types";
+import { ComponentLookupService } from "../../../core/componentLookupService";
 import {
   ComponentFlowNode,
   FileFlowAnalysis,
@@ -17,25 +16,28 @@ import {
   extractDefaultExportName,
   parseFileToAST,
 } from "../utils";
+import { PathResolver } from "../../../parsers/pathResolver";
 
 /**
- * Main scanner for component flow analysis - ENHANCED with configuration support
+ * Enhanced component flow scanner using optimized services and existing parsed files
  */
 export class ComponentFlowScanner {
   private jsxAnalyzer: JSXReturnAnalyzer;
-  private componentResolver: ComponentReferenceResolver;
+  private lookupService: ComponentLookupService;
+  private pathResolver: PathResolver;
+  private scanResult: ScanResult;
   private maxDepth: number;
   private config: ComponentFlowConfig;
 
-  // Global state to prevent duplicates across entire analysis
-  private globalAnalyzedComponents: Map<string, ComponentFlowNode>;
-  private globalConditionalIds: Set<string>;
+  // Optimized state management using lookup services
+  private analyzedComponents: Map<string, ComponentFlowNode>;
+  private conditionalIds: Set<string>;
   private analysisInProgress: Set<string>;
 
   constructor(
-    projectRoot: string,
-    srcDirectory: string,
-    components: ComponentRelation[],
+    lookupService: ComponentLookupService,
+    pathResolver: PathResolver,
+    scanResult: ScanResult,
     maxDepth: number = 10,
     config?: ComponentFlowConfig
   ) {
@@ -50,34 +52,35 @@ export class ComponentFlowScanner {
     };
 
     this.maxDepth = this.config.maxDepth;
+    this.lookupService = lookupService;
+    this.pathResolver = pathResolver;
+    this.scanResult = scanResult;
 
     // Initialize analyzers with configuration
     this.jsxAnalyzer = new JSXReturnAnalyzer(this.config);
-    this.componentResolver = new ComponentReferenceResolver(
-      projectRoot,
-      srcDirectory,
-      components
-    );
 
-    // Initialize global state
-    this.globalAnalyzedComponents = new Map();
-    this.globalConditionalIds = new Set();
+    // Initialize optimized state
+    this.analyzedComponents = new Map();
+    this.conditionalIds = new Set();
     this.analysisInProgress = new Set();
   }
 
   /**
-   * Analyzes a component file and builds its complete flow tree - ENHANCED
+   * Analyzes a component file and builds its complete flow tree using optimized services
    */
   scanComponentFlow(
     filePath: string,
     depth: number = 0
   ): ComponentFlowNode | null {
+    // FIXED: Normalize file path to match scanResult format
+    const normalizedFilePath = this.normalizeFilePath(filePath);
+
     // Create a unique key for this component analysis
-    const componentKey = this.createComponentKey(filePath);
+    const componentKey = this.createComponentKey(normalizedFilePath);
 
     // Return cached result if already analyzed
-    if (this.globalAnalyzedComponents.has(componentKey)) {
-      return this.globalAnalyzedComponents.get(componentKey)!;
+    if (this.analyzedComponents.has(componentKey)) {
+      return this.analyzedComponents.get(componentKey)!;
     }
 
     // Prevent infinite recursion
@@ -89,24 +92,35 @@ export class ComponentFlowScanner {
     this.analysisInProgress.add(componentKey);
 
     try {
-      const fileAnalysis = this.analyzeFile(filePath);
+      const fileAnalysis = this.analyzeFile(normalizedFilePath);
       if (!fileAnalysis) {
         return null;
       }
 
       const componentNode = this.buildComponentFlowNode(fileAnalysis, depth);
 
-      // Cache the result globally
-      this.globalAnalyzedComponents.set(componentKey, componentNode);
+      // Cache the result
+      this.analyzedComponents.set(componentKey, componentNode);
 
       return componentNode;
     } catch (error) {
-      console.warn(`Error scanning component flow for ${filePath}:`, error);
+      console.warn(
+        `Error scanning component flow for ${normalizedFilePath}:`,
+        error
+      );
       return null;
     } finally {
       // Remove from in-progress
       this.analysisInProgress.delete(componentKey);
     }
+  }
+
+  /**
+   * FIXED: Normalize file path to match scanResult format (forward slashes)
+   */
+  private normalizeFilePath(filePath: string): string {
+    // Convert Windows backslashes to forward slashes to match scanResult format
+    return filePath.replace(/\\/g, "/");
   }
 
   /**
@@ -129,14 +143,15 @@ export class ComponentFlowScanner {
    * Gets detailed analysis for a specific file without building the tree
    */
   getFileAnalysis(filePath: string): FileFlowAnalysis | null {
-    return this.analyzeFile(filePath);
+    const normalizedFilePath = this.normalizeFilePath(filePath);
+    return this.analyzeFile(normalizedFilePath);
   }
 
   /**
    * Creates a unique key for component identification
    */
   private createComponentKey(filePath: string): string {
-    return filePath.replace(/\\/g, "/"); // Normalize path separators
+    return this.pathResolver.normalizeFilePath(filePath);
   }
 
   /**
@@ -154,13 +169,24 @@ export class ComponentFlowScanner {
   }
 
   /**
-   * Analyzes a single file for component flow patterns
+   * Analyzes a single file using existing parsed content from ScanResult
    */
   private analyzeFile(filePath: string): FileFlowAnalysis | null {
     try {
-      const content = fs.readFileSync(filePath, "utf-8");
-      const ast = parseFileToAST(content);
+      // Use existing file content from ScanResult - no file I/O
+      const content = this.scanResult.fileContents.get(filePath);
+      if (!content) {
+        console.warn(`File content not found in scanResult: ${filePath}`);
+        // Debug: Log some available files for comparison
+        const availableFiles = Array.from(
+          this.scanResult.fileContents.keys()
+        ).slice(0, 3);
+        console.warn(`Available files sample:`, availableFiles);
+        return null;
+      }
 
+      // Parse AST only if not available (fallback)
+      const ast = parseFileToAST(content);
       if (!ast) {
         return null;
       }
@@ -188,19 +214,19 @@ export class ComponentFlowScanner {
   }
 
   /**
-   * Builds a ComponentFlowNode from file analysis - ENHANCED
+   * Builds a ComponentFlowNode from file analysis using optimized services
    */
   private buildComponentFlowNode(
     fileAnalysis: FileFlowAnalysis,
     depth: number
   ): ComponentFlowNode {
-    // Build conditional renders with global deduplication and HTML element support
+    // Build conditional renders with optimized deduplication
     const conditionalRenders = this.buildConditionalRenders(
       fileAnalysis,
       depth
     );
 
-    // Get unique child components
+    // Get unique child components using optimized resolution
     const childComponents = this.extractChildComponents(fileAnalysis, depth);
 
     return {
@@ -213,7 +239,7 @@ export class ComponentFlowScanner {
   }
 
   /**
-   * Builds conditional render objects with GLOBAL deduplication - ENHANCED
+   * Builds conditional render objects with optimized deduplication
    */
   private buildConditionalRenders(
     fileAnalysis: FileFlowAnalysis,
@@ -224,7 +250,7 @@ export class ComponentFlowScanner {
     for (const jsxReturn of fileAnalysis.jsxReturns) {
       if (jsxReturn.hasConditional) {
         for (const pattern of jsxReturn.conditionalPatterns) {
-          // Create globally unique conditional ID
+          // Create unique conditional ID
           const conditionalId = this.createConditionalKey(
             fileAnalysis.filePath,
             pattern.condition,
@@ -232,13 +258,13 @@ export class ComponentFlowScanner {
             pattern.position.column
           );
 
-          // Skip if this exact conditional has been processed globally
-          if (this.globalConditionalIds.has(conditionalId)) {
+          // Skip if this exact conditional has been processed
+          if (this.conditionalIds.has(conditionalId)) {
             continue;
           }
 
-          // Mark as processed globally
-          this.globalConditionalIds.add(conditionalId);
+          // Mark as processed
+          this.conditionalIds.add(conditionalId);
 
           const trueBranch = this.resolveComponentReferences(
             pattern.trueBranch,
@@ -254,7 +280,7 @@ export class ComponentFlowScanner {
               )
             : undefined;
 
-          // NEW: Build the enhanced conditional render with HTML elements
+          // Build the conditional render with HTML elements
           const conditionalRender: ConditionalRender = {
             conditionType: pattern.type,
             condition: pattern.condition,
@@ -263,7 +289,7 @@ export class ComponentFlowScanner {
             position: pattern.position,
           };
 
-          // NEW: Add HTML elements if available and enabled
+          // Add HTML elements if available and enabled
           if (this.config.includeHtmlElements) {
             if (
               pattern.htmlElementsTrue &&
@@ -288,7 +314,7 @@ export class ComponentFlowScanner {
   }
 
   /**
-   * Extracts child components with proper deduplication - ENHANCED
+   * Extracts child components with optimized deduplication
    */
   private extractChildComponents(
     fileAnalysis: FileFlowAnalysis,
@@ -346,7 +372,7 @@ export class ComponentFlowScanner {
   }
 
   /**
-   * Adds components to list if not already seen - HELPER
+   * Adds components to list if not already seen
    */
   private addUniqueComponents(
     components: ComponentFlowNode[],
@@ -363,7 +389,7 @@ export class ComponentFlowScanner {
   }
 
   /**
-   * Resolves component references to ComponentFlowNodes - ENHANCED
+   * Resolves component references to ComponentFlowNodes using optimized services
    */
   private resolveComponentReferences(
     references: Array<{
@@ -384,7 +410,7 @@ export class ComponentFlowScanner {
     const seenInThisResolution = new Set<string>();
 
     for (const reference of references) {
-      const resolved = this.componentResolver.resolveComponentReference(
+      const resolved = this.resolveComponentReference(
         reference,
         currentFilePath
       );
@@ -408,7 +434,7 @@ export class ComponentFlowScanner {
           if (depth < this.maxDepth) {
             const childNode = this.scanComponentFlow(resolved.filePath, depth);
             if (childNode) {
-              // Use the resolved component name, not the extracted one
+              // Use the resolved component name
               childNode.componentName = reference.name;
               resolvedNodes.push(childNode);
             }
@@ -416,7 +442,7 @@ export class ComponentFlowScanner {
             // At max depth, add without children
             resolvedNodes.push({
               ...resolved,
-              componentName: reference.name, // Use original reference name
+              componentName: reference.name,
               children: [],
               conditionalRenders: [],
             });
@@ -429,11 +455,221 @@ export class ComponentFlowScanner {
   }
 
   /**
+   * Resolves a component reference using optimized lookup services
+   */
+  private resolveComponentReference(
+    reference: {
+      name: string;
+      isJSXElement: boolean;
+      props: any[];
+      position: any;
+    },
+    currentFilePath: string
+  ): ComponentFlowNode | null {
+    const componentName = reference.name;
+
+    // Skip native HTML elements
+    if (this.isNativeHTMLElement(componentName)) {
+      return null;
+    }
+
+    // Skip React built-ins
+    if (this.isReactBuiltIn(componentName)) {
+      return null;
+    }
+
+    // Check if it's an external component using PathResolver
+    if (this.isExternallyImported(componentName, currentFilePath)) {
+      return {
+        componentName,
+        filePath: "",
+        isExternal: true,
+        conditionalRenders: [],
+        children: [],
+      };
+    }
+
+    // Try to resolve internal component using ComponentLookupService
+    const components = this.lookupService.getComponentsByName(componentName);
+
+    // Find the best match (prefer components in similar directory structure)
+    let bestMatch: ComponentRelation | null = null;
+    const currentDir = this.pathResolver.extractDirectory(currentFilePath);
+
+    for (const component of components) {
+      if (!bestMatch) {
+        bestMatch = component;
+      } else {
+        // Prefer components in the same or parent directories
+        const componentDir = component.directory;
+        const bestMatchDir = bestMatch.directory;
+
+        if (componentDir === currentDir) {
+          bestMatch = component;
+          break;
+        } else if (
+          componentDir.includes(currentDir) &&
+          !bestMatchDir.includes(currentDir)
+        ) {
+          bestMatch = component;
+        }
+      }
+    }
+
+    if (bestMatch) {
+      return {
+        componentName,
+        filePath: bestMatch.fullPath,
+        isExternal: false,
+        conditionalRenders: [],
+        children: [],
+      };
+    }
+
+    // Component not found
+    return null;
+  }
+
+  /**
+   * Checks if a component name is externally imported using PathResolver
+   */
+  private isExternallyImported(
+    componentName: string,
+    filePath: string
+  ): boolean {
+    const fileContent = this.scanResult.fileContents.get(filePath);
+    if (!fileContent) {
+      return false;
+    }
+
+    // Extract import statements and check if componentName is imported externally
+    const importRegex =
+      /import\s+(?:{[^}]*\b(\w+)\b[^}]*}|(\w+))\s+from\s+['"]([^'"]+)['"]/g;
+    let match;
+
+    while ((match = importRegex.exec(fileContent)) !== null) {
+      const namedImport = match[1];
+      const defaultImport = match[2];
+      const importPath = match[3];
+
+      if (namedImport === componentName || defaultImport === componentName) {
+        // Use PathResolver to check if this import is external
+        if (this.pathResolver.isExternalPackage(importPath)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Checks if a component reference is a native HTML element
+   */
+  private isNativeHTMLElement(componentName: string): boolean {
+    const htmlElements = new Set([
+      "div",
+      "span",
+      "p",
+      "h1",
+      "h2",
+      "h3",
+      "h4",
+      "h5",
+      "h6",
+      "a",
+      "img",
+      "button",
+      "input",
+      "form",
+      "label",
+      "select",
+      "option",
+      "textarea",
+      "table",
+      "thead",
+      "tbody",
+      "tr",
+      "td",
+      "th",
+      "ul",
+      "ol",
+      "li",
+      "nav",
+      "header",
+      "footer",
+      "main",
+      "section",
+      "article",
+      "aside",
+      "figure",
+      "figcaption",
+      "video",
+      "audio",
+      "canvas",
+      "svg",
+      "path",
+      "circle",
+      "rect",
+      "line",
+      "polygon",
+      "iframe",
+      "embed",
+      "object",
+      "pre",
+      "code",
+      "blockquote",
+      "hr",
+      "br",
+      "strong",
+      "em",
+      "small",
+      "mark",
+      "del",
+      "ins",
+      "sub",
+      "sup",
+    ]);
+
+    return htmlElements.has(componentName.toLowerCase());
+  }
+
+  /**
+   * Checks if a component reference is a React built-in
+   */
+  private isReactBuiltIn(componentName: string): boolean {
+    const reactBuiltIns = new Set([
+      "Fragment",
+      "Suspense",
+      "StrictMode",
+      "Profiler",
+      "React.Fragment",
+      "React.Suspense",
+      "React.StrictMode",
+      "React.Profiler",
+      "Transition",
+      "SuspenseList",
+      "ConcurrentMode",
+      "unstable_ConcurrentMode",
+    ]);
+
+    return reactBuiltIns.has(componentName);
+  }
+
+  /**
    * Extracts component name from file path or AST
    */
   private extractComponentName(filePath: string, ast: t.File): string {
     // First try to extract from default export
     let componentName = extractDefaultExportName(ast);
+
+    if (!componentName) {
+      // Use lookup service to get component name for this file
+      const component = this.lookupService.getComponentByPath(filePath);
+      if (component) {
+        componentName = component.name;
+      }
+    }
 
     if (!componentName) {
       // Fallback to filename
@@ -492,16 +728,16 @@ export class ComponentFlowScanner {
   }
 
   /**
-   * Resets the analyzer state - ENHANCED
+   * Resets the analyzer state
    */
   reset(): void {
-    this.globalAnalyzedComponents.clear();
-    this.globalConditionalIds.clear();
+    this.analyzedComponents.clear();
+    this.conditionalIds.clear();
     this.analysisInProgress.clear();
   }
 
   /**
-   * Gets accurate summary statistics - ENHANCED
+   * Gets summary statistics
    */
   getSummaryStats(rootComponents: ComponentFlowNode[]): {
     totalConditionals: number;
@@ -510,15 +746,14 @@ export class ComponentFlowScanner {
     htmlElementsEnabled: boolean;
     totalHtmlElementsInConditionals: number;
   } {
-    // Since we use global deduplication, we can just count what's stored
-    const allComponents = Array.from(this.globalAnalyzedComponents.values());
-    const totalConditionals = this.globalConditionalIds.size;
+    const allComponents = Array.from(this.analyzedComponents.values());
+    const totalConditionals = this.conditionalIds.size;
     const totalComponents = allComponents.length;
     const uniqueComponents = new Set(
       allComponents.map((comp) => this.createComponentKey(comp.filePath))
     ).size;
 
-    // NEW: Count HTML elements in conditionals
+    // Count HTML elements in conditionals
     let totalHtmlElementsInConditionals = 0;
     if (this.config.includeHtmlElements) {
       for (const component of allComponents) {
@@ -545,21 +780,21 @@ export class ComponentFlowScanner {
   }
 
   /**
-   * Gets all analyzed components - ENHANCED
+   * Gets all analyzed components
    */
   getAllAnalyzedComponents(): ComponentFlowNode[] {
-    return Array.from(this.globalAnalyzedComponents.values());
+    return Array.from(this.analyzedComponents.values());
   }
 
   /**
-   * Gets global conditional count
+   * Gets conditional count
    */
-  getGlobalConditionalCount(): number {
-    return this.globalConditionalIds.size;
+  getConditionalCount(): number {
+    return this.conditionalIds.size;
   }
 
   /**
-   * NEW: Updates configuration and reinitializes analyzers
+   * Updates configuration
    */
   updateConfig(config: Partial<ComponentFlowConfig>): void {
     this.config = { ...this.config, ...config };
@@ -575,73 +810,9 @@ export class ComponentFlowScanner {
   }
 
   /**
-   * NEW: Gets current configuration
+   * Gets current configuration
    */
   getConfig(): ComponentFlowConfig {
     return { ...this.config };
-  }
-
-  /**
-   * NEW: Enables HTML element tracking
-   */
-  enableHtmlElementTracking(): void {
-    this.updateConfig({ includeHtmlElements: true });
-  }
-
-  /**
-   * NEW: Disables HTML element tracking
-   */
-  disableHtmlElementTracking(): void {
-    this.updateConfig({ includeHtmlElements: false });
-  }
-
-  /**
-   * NEW: Analyzes specific file for HTML elements and components
-   */
-  analyzeFileForElements(filePath: string): {
-    components: ComponentFlowNode[];
-    htmlElementStats: {
-      totalElements: number;
-      elementsByTag: Map<string, number>;
-      elementsWithText: number;
-    };
-  } | null {
-    const fileAnalysis = this.analyzeFile(filePath);
-    if (!fileAnalysis) {
-      return null;
-    }
-
-    const components = [this.buildComponentFlowNode(fileAnalysis, 0)];
-
-    // NEW: Calculate HTML element statistics
-    const htmlElementStats = {
-      totalElements: 0,
-      elementsByTag: new Map<string, number>(),
-      elementsWithText: 0,
-    };
-
-    if (this.config.includeHtmlElements) {
-      for (const jsxReturn of fileAnalysis.jsxReturns) {
-        for (const htmlElement of jsxReturn.htmlElementReferences) {
-          htmlElementStats.totalElements++;
-
-          const currentCount =
-            htmlElementStats.elementsByTag.get(htmlElement.tagName) || 0;
-          htmlElementStats.elementsByTag.set(
-            htmlElement.tagName,
-            currentCount + 1
-          );
-
-          if (htmlElement.textContent) {
-            htmlElementStats.elementsWithText++;
-          }
-        }
-      }
-    }
-
-    return {
-      components,
-      htmlElementStats,
-    };
   }
 }

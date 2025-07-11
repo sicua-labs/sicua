@@ -8,6 +8,7 @@ import { ComponentUtils } from "../utils/componentUtils";
 import { PerformanceUtils } from "../utils/performanceUtils";
 import { JsxUtils } from "../utils/jsxUtils";
 import { PageComponentMap } from "../types/internalTypes";
+import { ComponentFilter } from "../utils/ComponentFilter";
 
 /**
  * Analyzer for Core Web Vitals and lazy loading aspects that impact SEO
@@ -85,7 +86,12 @@ export class PerformanceAnalyzer {
     const components: LazyLoadingAnalysis["components"] = [];
     const images: LazyLoadingAnalysis["images"] = [];
 
-    this.allComponents.forEach((component) => {
+    // Filter to only include actual React components
+    const actualComponents = ComponentFilter.filterComponents(
+      this.allComponents
+    );
+
+    actualComponents.forEach((component) => {
       if (!component.content) return;
 
       const sourceFile = ComponentUtils.getSourceFile(component);
@@ -123,7 +129,7 @@ export class PerformanceAnalyzer {
       this.extractImageLazyLoadingInfo(sourceFile, images, component.fullPath);
     });
 
-    // Calculate statistics
+    // Calculate statistics with filtered components
     const totalComponents = components.length;
     const lazyLoadedComponents = components.filter(
       (c) => c.isLazyLoaded

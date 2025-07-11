@@ -1,39 +1,39 @@
 import { ComponentRelation, DependencyGraph } from "../../../types";
+import { ComponentLookupService } from "../../../core/componentLookupService";
 import { generateComponentId } from "../../../utils/common/analysisUtils";
-import { normalizeImportPath } from "../utils/graphUtils";
 
 /**
- * Builds a dependency graph from component relationships using unique component IDs
+ * Builds a dependency graph from component relationships using optimized lookups
  * @param components The list of components to analyze
+ * @param lookupService Pre-initialized lookup service for O(1) component resolution
  * @returns A dependency graph mapping unique component IDs to their dependencies
  */
 export function buildDependencyGraph(
-  components: ComponentRelation[]
+  components: ComponentRelation[],
+  lookupService: ComponentLookupService
 ): DependencyGraph {
   const graph: DependencyGraph = {};
 
-  // Create a map for efficient component lookup by name
-  const componentsByName = new Map<string, ComponentRelation[]>();
-  components.forEach((component) => {
-    if (!componentsByName.has(component.name)) {
-      componentsByName.set(component.name, []);
-    }
-    componentsByName.get(component.name)!.push(component);
-  });
-
-  components.forEach((component) => {
+  for (const component of components) {
     const componentId = generateComponentId(component);
 
-    graph[componentId] = component.imports
-      .map((imp) => normalizeImportPath(imp, components))
-      .flatMap((normalizedImport) => {
-        // Find all components that match this import name
-        const matchingComponents = componentsByName.get(normalizedImport) || [];
-        // Return unique IDs for all matching components
-        return matchingComponents.map((comp) => generateComponentId(comp));
-      })
-      .filter((targetId) => targetId !== componentId); // Avoid self-references
-  });
+    // Resolve all imports to target component IDs using O(1) lookups
+    const targetComponentIds: string[] = [];
+
+    for (const importPath of component.imports) {
+      const resolvedIds = lookupService.resolveImportToComponentIds(importPath);
+
+      // Add all resolved component IDs, excluding self-references
+      for (const targetId of resolvedIds) {
+        if (targetId !== componentId) {
+          targetComponentIds.push(targetId);
+        }
+      }
+    }
+
+    // Remove duplicates and store in graph
+    graph[componentId] = Array.from(new Set(targetComponentIds));
+  }
 
   return graph;
 }

@@ -1,11 +1,10 @@
 /**
  * Main accessibility analyzer class that orchestrates the entire analysis process
- * Updated to use enhanced validators with context support
+ * Updated to work with enhanced ScanResult and project structure detection
  */
 
-import { ComponentRelation } from "../../types";
-import { ElementMatcher } from "./matchers/elementMatcher";
-import { A11yRuleManager, A11Y_RULES } from "./rules/a11yRules";
+import { ComponentRelation, ScanResult } from "../../types";
+import { A11Y_RULES } from "./rules/a11yRules";
 import {
   ComponentA11yInfo,
   AccessibilityAnalysis,
@@ -17,10 +16,12 @@ import { JSXAnalysisUtils } from "./utils/jsxAnalysisUtils";
 import { RuleValidators } from "./validators/ruleValidators";
 
 export class AccessibilityAnalyzer {
+  private scanResult: ScanResult;
   private components: ComponentRelation[];
   private componentA11yInfo: Map<string, ComponentA11yInfo> = new Map();
 
-  constructor(components: ComponentRelation[]) {
+  constructor(scanResult: ScanResult, components: ComponentRelation[]) {
+    this.scanResult = scanResult;
     this.components = components;
   }
 
@@ -74,8 +75,11 @@ export class AccessibilityAnalyzer {
       jsxStructure: component.jsxStructure,
     };
 
-    // Extract JSX elements from component
-    const elements = JSXAnalysisUtils.extractJSXElements(component);
+    // Extract JSX elements from component using enhanced extraction
+    const elements = JSXAnalysisUtils.extractJSXElements(
+      component,
+      this.scanResult
+    );
 
     // Run enhanced individual element validations
     const violations: AccessibilityViolation[] = [];

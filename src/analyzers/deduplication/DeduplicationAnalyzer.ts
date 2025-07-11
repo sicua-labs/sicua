@@ -1,5 +1,9 @@
 import ts from "typescript";
-import { ComponentRelation, ComponentSimilarity } from "../../types";
+import {
+  ComponentRelation,
+  ComponentSimilarity,
+  ScanResult,
+} from "../../types";
 import {
   SimilarityThresholds,
   DEFAULT_SIMILARITY_THRESHOLDS,
@@ -26,41 +30,32 @@ import {
  */
 export class DeduplicationAnalyzer {
   private sourceFiles: Map<string, ts.SourceFile>;
+  private scanResult: ScanResult;
 
-  /**
-   * Creates a new DeduplicationAnalyzer
-   * @param components Components to analyze
-   */
-  constructor(components: ComponentRelation[]) {
-    // Create source files from components with content
-    this.sourceFiles = createSourceFiles(components);
+  constructor(components: ComponentRelation[], scanResult: ScanResult) {
+    this.scanResult = scanResult;
+    this.sourceFiles = createSourceFiles(components, scanResult);
   }
 
   /**
    * Analyzes components to find similarities and duplication
-   * @param components Components to analyze
-   * @param thresholds Optional similarity thresholds
-   * @returns Component similarities
    */
   async analyzeComponents(
     components: ComponentRelation[],
     thresholds: SimilarityThresholds = DEFAULT_SIMILARITY_THRESHOLDS
   ): Promise<ComponentSimilarity[]> {
     try {
-      // Filter valid components first
       const validComponents = components.filter((comp) =>
-        isValidComponentForComparison(comp)
+        this.isValidForDeduplication(comp)
       );
 
-      // First pass: Enhance ComponentRelation with detailed prop and structure info
       let processedCount = 0;
       let comparisonCount = 0;
 
-      // Make enhancement parallel but controlled
+      // Enhance components with detailed info
       const enhancedComponents = await Promise.all(
         validComponents.map(async (component) => {
           processedCount++;
-          // Allow other operations to execute between heavy computations
           await new Promise((resolve) => setTimeout(resolve, 0));
 
           const sourceFile = this.sourceFiles.get(component.fullPath);
@@ -68,15 +63,14 @@ export class DeduplicationAnalyzer {
             return component;
           }
 
-          return enhanceComponentInfo(component, sourceFile);
+          return enhanceComponentInfo(component, sourceFile, this.scanResult);
         })
       );
 
-      // Second pass: Find similarities between components
+      // Find similarities between components
       const similarities: ComponentSimilarity[] = [];
+      const chunkSize = 100;
 
-      // Process comparisons in chunks to avoid blocking
-      const chunkSize = 100; // Adjust based on your needs
       for (let i = 0; i < enhancedComponents.length; i++) {
         for (let j = i + 1; j < enhancedComponents.length; j++) {
           if (
@@ -89,9 +83,18 @@ export class DeduplicationAnalyzer {
             continue;
           }
 
+          // Skip components from very different contexts
+          if (
+            !shouldCompareByContext(
+              enhancedComponents[i],
+              enhancedComponents[j]
+            )
+          ) {
+            continue;
+          }
+
           comparisonCount++;
           if (comparisonCount % chunkSize === 0) {
-            // Allow other operations to execute between chunks
             await new Promise((resolve) => setTimeout(resolve, 0));
           }
 
@@ -111,16 +114,98 @@ export class DeduplicationAnalyzer {
         thresholds.minSimilarityScore
       );
 
-      // Group similar components to form larger groups (like the original implementation)
+      // Group similar components
       const groupedSimilarities = groupSimilarComponents(significantMatches);
 
-      // Apply consolidation to ensure optimal result quality
+      // Apply consolidation
       const consolidatedResults = consolidateSimilarities(groupedSimilarities);
 
       return consolidatedResults;
     } finally {
-      // Cleanup
       this.sourceFiles.clear();
     }
   }
+
+  /**
+   * Component validation using scan result metadata
+   */
+  private isValidForDeduplication(component: ComponentRelation): boolean {
+    if (!isValidComponentForComparison(component)) {
+      return false;
+    }
+
+    const metadata = this.scanResult.fileMetadata.get(component.fullPath);
+    if (metadata) {
+      // Skip test files
+      if (metadata.isTest) {
+        return false;
+      }
+
+      // Require React patterns
+      if (
+        !metadata.hasReactImport &&
+        !metadata.hasJSX &&
+        metadata.componentCount === 0
+      ) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+}
+
+/**
+ * Check if components should be compared based on their context/purpose
+ */
+function shouldCompareByContext(
+  comp1: ComponentRelation,
+  comp2: ComponentRelation
+): boolean {
+  // Extract context from file paths
+  const context1 = extractContext(comp1.fullPath);
+  const context2 = extractContext(comp2.fullPath);
+
+  // Don't compare components from very different contexts
+  const differentContexts = ["auth", "marketing", "admin", "dashboard"];
+
+  if (
+    differentContexts.includes(context1) &&
+    differentContexts.includes(context2) &&
+    context1 !== context2
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Extract context from file path
+ */
+function extractContext(filePath: string): string {
+  const pathParts = filePath.split("/");
+
+  // Look for Next.js route groups like (auth), (marketing)
+  for (const part of pathParts) {
+    if (part.startsWith("(") && part.endsWith(")")) {
+      return part.slice(1, -1);
+    }
+  }
+
+  // Look for common directory patterns
+  const contextPatterns = [
+    "auth",
+    "marketing",
+    "admin",
+    "dashboard",
+    "components",
+  ];
+  for (const part of pathParts) {
+    if (contextPatterns.includes(part.toLowerCase())) {
+      return part.toLowerCase();
+    }
+  }
+
+  return "general";
 }

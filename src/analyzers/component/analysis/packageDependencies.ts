@@ -1,7 +1,7 @@
 import { parsePackageJson } from "../../../parsers/fileParser";
 import {
   ComponentRelation,
-  ConfigManager,
+  IConfigManager,
   DependencyAnalysisResult,
 } from "../../../types";
 import * as fs from "fs/promises";
@@ -12,21 +12,22 @@ import {
   isSpecialPackage,
 } from "../../../constants/dependencyAnalyzer.constants";
 import fg from "fast-glob";
-import {
-  extractPackageName,
-  isPathAlias,
-} from "../../../utils/common/pathUtils";
+import { isPathAlias } from "../../../utils/common/pathUtils";
 import { PackageDependencyContext } from "../types/component.types";
+import { PathResolver } from "../../../parsers/pathResolver";
 
 /**
- * Analyzes package dependencies, finding unused and missing dependencies
+ * Analyzes package dependencies using optimized path resolution
  * @param components The list of components to analyze
  * @param config The config manager with project path
+ * @param scanResult The enhanced scan result with file metadata
+ * @param pathResolver Pre-initialized path resolver for O(1) external package detection
  * @returns Analysis result with unused and missing dependencies
  */
 export async function analyzeDependencies(
   components: ComponentRelation[],
-  config: ConfigManager
+  config: IConfigManager,
+  pathResolver: PathResolver
 ): Promise<DependencyAnalysisResult> {
   const packageDependencies = await parsePackageJson(config.projectPath);
   const context: PackageDependencyContext = {
@@ -34,11 +35,15 @@ export async function analyzeDependencies(
     usedInConfigs: new Set<string>(),
   };
 
-  // Analyze components
-  collectComponentDependencies(components, context);
+  // Analyze components - only collect external package dependencies
+  collectExternalDependencies(components, context, pathResolver);
 
-  // Analyze config files
-  await collectConfigDependencies(config.projectPath, context);
+  // Analyze config files - only collect external package dependencies
+  await collectConfigExternalDependencies(
+    config.projectPath,
+    context,
+    pathResolver
+  );
 
   // Find unused dependencies
   const unusedDependencies = Object.keys(packageDependencies).filter(
@@ -49,7 +54,7 @@ export async function analyzeDependencies(
       !isDevToolPackage(dep)
   );
 
-  // Find missing dependencies
+  // Find missing dependencies (should now only be actual external packages)
   const missingDependencies = Array.from(context.usedDependencies).filter(
     (dep) => !packageDependencies[dep]
   );
@@ -61,28 +66,37 @@ export async function analyzeDependencies(
 }
 
 /**
- * Collects dependencies used in components
+ * Collects only external package dependencies from components using optimized path resolution
  */
-function collectComponentDependencies(
+function collectExternalDependencies(
   components: ComponentRelation[],
-  context: PackageDependencyContext
+  context: PackageDependencyContext,
+  pathResolver: PathResolver
 ): void {
-  components.forEach((component) => {
-    component.imports.forEach((imp) => {
-      const packageName = extractPackageName(imp);
-      if (packageName && !isPathAlias(packageName)) {
-        context.usedDependencies.add(packageName);
+  for (const component of components) {
+    for (const importPath of component.imports) {
+      const resolution = pathResolver.resolveImportPath(
+        importPath,
+        component.fullPath
+      );
+
+      // Only process external packages
+      if (resolution.isExternal && resolution.packageName) {
+        if (!isPathAlias(resolution.packageName)) {
+          context.usedDependencies.add(resolution.packageName);
+        }
       }
-    });
-  });
+    }
+  }
 }
 
 /**
- * Collects dependencies used in config files
+ * Collects only external package dependencies from config files using optimized detection
  */
-async function collectConfigDependencies(
+async function collectConfigExternalDependencies(
   projectPath: string,
-  context: PackageDependencyContext
+  context: PackageDependencyContext,
+  pathResolver: PathResolver
 ): Promise<void> {
   const configPatterns = [...CONFIG_FILES];
   const configFiles = await fg(configPatterns, {
@@ -96,17 +110,44 @@ async function collectConfigDependencies(
     configFiles.map(async (configPath) => {
       try {
         const content = await fs.readFile(path.resolve(configPath), "utf8");
-        const matches =
-          content.match(/(?:require|import)\s*\(['"]([^'"]+)['"]\)/g) || [];
-        matches.forEach((match) => {
-          const packageName = extractPackageName(match);
-          if (packageName && !isPathAlias(packageName)) {
-            context.usedInConfigs.add(packageName);
+
+        // Extract all import/require patterns efficiently
+        const importPatterns = extractImportPatterns(content);
+
+        for (const importPath of importPatterns) {
+          // Use PathResolver for consistent external package detection
+          if (pathResolver.isExternalPackage(importPath)) {
+            const packageName = pathResolver.extractPackageName(importPath);
+            if (packageName && !isPathAlias(packageName)) {
+              context.usedInConfigs.add(packageName);
+            }
           }
-        });
+        }
       } catch (error) {
         console.warn(`Error processing config file ${configPath}:`, error);
       }
     })
   );
+}
+
+/**
+ * Extract import patterns from file content efficiently
+ */
+function extractImportPatterns(content: string): string[] {
+  const patterns: string[] = [];
+
+  // Combined regex for all import/require patterns
+  const importRegex =
+    /(?:require\s*\(\s*['"]([^'"]+)['"]|import\s+.*?from\s*['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"])/g;
+
+  let match;
+  while ((match = importRegex.exec(content)) !== null) {
+    // match[1] = require, match[2] = import from, match[3] = dynamic import
+    const importPath = match[1] || match[2] || match[3];
+    if (importPath) {
+      patterns.push(importPath);
+    }
+  }
+
+  return patterns;
 }

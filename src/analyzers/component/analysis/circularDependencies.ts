@@ -1,4 +1,5 @@
-import { ComponentRelation, DependencyGraph } from "../../../types";
+import { DependencyGraph } from "../../../types";
+import { ComponentLookupService } from "../../../core/componentLookupService";
 import { DfsContext } from "../types/component.types";
 import {
   IDiagramData,
@@ -9,18 +10,17 @@ import {
   CircularGroupInfo,
   CircularDependencyAnalysisResult,
 } from "../../../types/circularDependency.types";
-import { generateComponentId } from "../../../utils/common/analysisUtils";
 import { generateCircularLayout, generateEdgeId } from "../utils/graphUtils";
 
 /**
- * Detects circular dependencies in the component graph
+ * Detects circular dependencies in the component graph using optimized lookups
  * @param graph The dependency graph with unique component IDs
- * @param components The list of components
+ * @param lookupService Pre-initialized lookup service for O(1) component resolution
  * @returns Complete circular dependency analysis
  */
 export function detectCircularDependencies(
   graph: DependencyGraph,
-  components: ComponentRelation[]
+  lookupService: ComponentLookupService
 ): CircularDependencyAnalysisResult {
   const context: DfsContext = {
     visited: {},
@@ -31,59 +31,32 @@ export function detectCircularDependencies(
 
   const circularGroups: string[][] = [];
 
-  // Create a map for efficient component lookup by unique ID
-  const componentMap = new Map<string, ComponentRelation>();
-  components.forEach((comp) => {
-    const componentId = generateComponentId(comp);
-    componentMap.set(componentId, comp);
-  });
-
-  // DFS function to detect cycles
-  const dfs = (nodeId: string, path: string[] = []): void => {
+  // Optimized DFS with early cycle detection
+  const dfs = (nodeId: string, path: string[]): void => {
     context.visited[nodeId] = true;
     context.recursionStack[nodeId] = true;
     path.push(nodeId);
 
-    if (graph[nodeId]) {
-      for (const neighborId of graph[nodeId]) {
+    const neighbors = graph[nodeId];
+    if (neighbors) {
+      for (const neighborId of neighbors) {
         if (!context.visited[neighborId]) {
-          dfs(neighborId, [...path]);
+          dfs(neighborId, path);
         } else if (context.recursionStack[neighborId]) {
+          // Found cycle - extract it efficiently
           const cycleStart = path.indexOf(neighborId);
           const cycleNodes = path.slice(cycleStart);
 
-          cycleNodes.forEach((node) => context.nodesInCycles.add(node));
+          // Mark all nodes in cycle
+          for (const node of cycleNodes) {
+            context.nodesInCycles.add(node);
+          }
 
-          // Store this circular group
+          // Store circular group
           circularGroups.push([...cycleNodes]);
 
-          // Create edges for circular dependencies
-          cycleNodes.forEach((componentId, index, cyclePath) => {
-            const nextComponentId = cyclePath[(index + 1) % cyclePath.length];
-
-            const edgeData: IEdgeData = {
-              type: "import",
-              label: "circular",
-            };
-
-            const edge: IEdge = {
-              id: generateEdgeId(componentId, nextComponentId),
-              source: componentId,
-              target: nextComponentId,
-              data: edgeData,
-              animated: true,
-              style: {
-                stroke: "#ff6b6b",
-                strokeWidth: 2,
-              },
-              markerEnd: {
-                type: "arrowclosed",
-                color: "#ff6b6b",
-              },
-            };
-
-            context.edges.push(edge);
-          });
+          // Create edges for visualization
+          createCircularEdges(cycleNodes, context.edges);
         }
       }
     }
@@ -92,14 +65,15 @@ export function detectCircularDependencies(
     path.pop();
   };
 
-  // Run DFS on each node in the graph
-  Object.keys(graph).forEach((nodeId) => {
+  // Run DFS on all unvisited nodes
+  const allNodeIds = Object.keys(graph);
+  for (const nodeId of allNodeIds) {
     if (!context.visited[nodeId]) {
-      dfs(nodeId);
+      dfs(nodeId, []);
     }
-  });
+  }
 
-  // Generate positions for nodes in circular layout
+  // Generate optimized node layout
   const nodeIds = Array.from(context.nodesInCycles);
   const positions = generateCircularLayout(
     nodeIds.length,
@@ -108,12 +82,12 @@ export function detectCircularDependencies(
     250 // radius
   );
 
-  // Create nodes using unique component IDs with positions
+  // Create nodes using O(1) lookups
   const nodes: INode[] = nodeIds.map((nodeId, index) => {
-    const component = componentMap.get(nodeId);
+    const component = lookupService.getComponentById(nodeId);
 
     const nodeData: INodeData = {
-      label: component?.name || nodeId, // Use original component name as label
+      label: component?.name || nodeId,
       fullPath: component?.fullPath || nodeId,
       directory: component?.directory || "",
       isComponent: true,
@@ -130,21 +104,20 @@ export function detectCircularDependencies(
     };
   });
 
-  // Create detailed circular group information
+  // Create detailed circular group information using O(1) lookups
   const circularGroupInfos: CircularGroupInfo[] = circularGroups.map(
     (group, index) => {
-      // Convert component IDs back to readable names for display
       const componentNames = group.map((componentId) => {
-        const component = componentMap.get(componentId);
+        const component = lookupService.getComponentById(componentId);
         return component?.name || componentId;
       });
 
       return {
         id: `circular-${index}`,
-        components: componentNames, // Use readable names for display
-        path: componentNames, // The full path of the circular dependency
+        components: componentNames,
+        path: componentNames,
         size: group.length,
-        isCritical: group.length > 3, // Consider larger cycles more critical
+        isCritical: group.length > 3,
         breakSuggestions: [
           {
             component: componentNames[0],
@@ -163,7 +136,16 @@ export function detectCircularDependencies(
     version: "1.1.0",
   };
 
-  // Create the complete analysis result with unique IDs in stats
+  // Create stats with O(1) lookups
+  const componentsByCircularGroups = circularGroups.reduce((acc, group, i) => {
+    const componentNames = group.map((componentId) => {
+      const component = lookupService.getComponentById(componentId);
+      return component?.name || componentId;
+    });
+    acc[`circular-${i}`] = componentNames;
+    return acc;
+  }, {} as Record<string, string[]>);
+
   return {
     circularDependencyGraph,
     circularGroups: circularGroupInfos,
@@ -175,15 +157,40 @@ export function detectCircularDependencies(
         0
       ),
       criticalCircularPaths: circularGroups.filter((g) => g.length > 3).length,
-      componentsByCircularGroups: circularGroups.reduce((acc, group, i) => {
-        // Use readable component names for the stats display
-        const componentNames = group.map((componentId) => {
-          const component = componentMap.get(componentId);
-          return component?.name || componentId;
-        });
-        acc[`circular-${i}`] = componentNames;
-        return acc;
-      }, {} as Record<string, string[]>),
+      componentsByCircularGroups,
     },
   };
+}
+
+/**
+ * Create circular dependency edges efficiently
+ */
+function createCircularEdges(cycleNodes: string[], edges: IEdge[]): void {
+  for (let i = 0; i < cycleNodes.length; i++) {
+    const currentNode = cycleNodes[i];
+    const nextNode = cycleNodes[(i + 1) % cycleNodes.length];
+
+    const edgeData: IEdgeData = {
+      type: "import",
+      label: "circular",
+    };
+
+    const edge: IEdge = {
+      id: generateEdgeId(currentNode, nextNode),
+      source: currentNode,
+      target: nextNode,
+      data: edgeData,
+      animated: true,
+      style: {
+        stroke: "#ff6b6b",
+        strokeWidth: 2,
+      },
+      markerEnd: {
+        type: "arrowclosed",
+        color: "#ff6b6b",
+      },
+    };
+
+    edges.push(edge);
+  }
 }

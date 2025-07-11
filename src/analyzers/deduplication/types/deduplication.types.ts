@@ -95,14 +95,42 @@ export interface SimilarityThresholds {
 }
 
 /**
- * Default similarity thresholds
+ * Balanced similarity thresholds - not too strict, not too lenient
  */
 export const DEFAULT_SIMILARITY_THRESHOLDS: SimilarityThresholds = {
   nameDistanceThreshold: 0.7,
-  minSimilarityScore: 0.7,
-  minStructureComplexity: 2,
-  minComplexityRatio: 0.6,
+  minSimilarityScore: 0.8, // Raised from 0.7 to 0.8
+  minStructureComplexity: 3, // Raised from 2 to 3
+  minComplexityRatio: 0.7, // Raised from 0.6 to 0.7
 };
+
+/**
+ * Common UI patterns that should be weighted less in similarity calculation
+ */
+export const COMMON_UI_PATTERNS = [
+  "Alert",
+  "AlertTitle",
+  "AlertDescription",
+  "AlertCircle",
+  "Card",
+  "CardHeader",
+  "CardTitle",
+  "CardContent",
+  "Button",
+  "Input",
+  "Label",
+  "div",
+  "span",
+  "p",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "Separator",
+  "Badge",
+];
 
 // Internal interfaces for component grouping
 export interface GroupData {
