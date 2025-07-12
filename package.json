@@ -1,6 +1,6 @@
 {
   "name": "sicua",
-  "version": "1.0.4",
+  "version": "1.0.6",
   "description": "A tool for analyzing project structure and dependencies",
   "main": "dist/index.js",
   "bin": {
@@ -35,17 +35,17 @@
     "zombie-code"
   ],
   "author": {
-    "name": "Vaggelis Kapetanakis",
-    "email": "your-email@example.com"
+    "name": "Sicua Labs",
+    "email": "sicualabs@gmail.com"
   },
   "license": "MIT",
-  "homepage": "https://github.com/sicualabs/sicua#readme",
+  "homepage": "https://github.com/sicua-labs/sicua#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sicualabs/sicua.git"
+    "url": "https://github.com/sicua-labs/sicua.git"
   },
   "bugs": {
-    "url": "https://github.com/sicualabs/sicua/issues"
+    "url": "https://github.com/sicua-labs/sicua/issues"
   },
   "engines": {
     "node": ">=18.0.0",
