@@ -28,13 +28,13 @@ This project adheres to a code of conduct that we expect all contributors to fol
 2. **Clone your fork** locally:
 
    ```bash
-   git clone https://github.com/sicualabs/sicua.git
+   git clone https://github.com/sicua-labs/sicua.git
    cd sicua
    ```
 
 3. **Add the upstream remote**:
    ```bash
-   git remote add upstream https://github.com/sicualabs/sicua.git
+   git remote add upstream https://github.com/sicua-labs/sicua.git
    ```
 
 ## Development Setup

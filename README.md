@@ -176,9 +176,9 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Support
 
-- 📚 [Documentation](https://github.com/sicualabs/sicua/wiki)
-- 🐛 [Report Issues](https://github.com/sicualabs/sicua/issues)
-- 💬 [Discussions](https://github.com/sicualabs/sicua/discussions)
+- 📚 [Documentation](https://github.com/sicua-labs/sicua/wiki)
+- 🐛 [Report Issues](https://github.com/sicua-labs/sicua/issues)
+- 💬 [Discussions](https://github.com/sicua-labs/sicua/discussions)
 
 ---
 
